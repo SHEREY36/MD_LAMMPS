@@ -1,0 +1,56 @@
+# Build directories
+build*/
+cmake-build-*/
+
+# Compiled binaries and object files
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.exe
+lmp
+lmp_*
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+_deps/
+Makefile
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# LAMMPS run artifacts
+log.lammps
+dump.*
+*.lammpstrj
+restart.*
+*.restart
+tmp.*
+
+# Fortran modules
+*.mod
+*.smod
+
+# Dependency files
+*.d
