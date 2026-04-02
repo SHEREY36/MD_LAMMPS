@@ -7,6 +7,7 @@
 #include "fix_dummy.h"
 #include "fix_neigh_history.h"
 #include "force.h"
+#include "math_const.h"
 #include "math_extra.h"
 #include "memory.h"
 #include "modify.h"
@@ -16,19 +17,69 @@
 #include "atom_vec_ellipsoid.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 using namespace LAMMPS_NS;
+using MathConst::MY_PI;
+
+namespace {
+// Principal moments for a 3D spherocylinder (capsule):
+// diameter = d = 2R, cylindrical section length = lcyl = 2H.
+// Axis of symmetry is body-z, so Ixx=Iyy=I_perp and Izz=I_parallel.
+inline void spherocyl_inertia(double mass, double radius, double half_cyl, double *inertia)
+{
+  const double d = 2.0 * radius;
+  const double lcyl = 2.0 * half_cyl;
+
+  const double d2 = d * d;
+  const double d3 = d2 * d;
+  const double d4 = d2 * d2;
+  const double d5 = d4 * d;
+  const double lcyl2 = lcyl * lcyl;
+  const double lcyl3 = lcyl2 * lcyl;
+
+  // rho from particle mass and spherocylinder volume
+  const double vol = MY_PI * d3 / 6.0 + MY_PI * d2 * lcyl / 4.0;
+  const double rho = mass / (vol + 1e-30);
+
+  const double iperp =
+      (MY_PI / 48.0) * rho * d2 * lcyl3 +
+      (3.0 * MY_PI / 64.0) * rho * d4 * lcyl +
+      (MY_PI / 60.0) * rho * d5 +
+      (MY_PI / 24.0) * rho * d3 * lcyl2;
+
+  const double ipar =
+      (MY_PI / 32.0) * rho * d4 * lcyl +
+      (MY_PI / 60.0) * rho * d5;
+
+  inertia[0] = iperp;
+  inertia[1] = iperp;
+  inertia[2] = ipar;
+}
+}    // namespace
 
 PairGranSpherocylHistory::PairGranSpherocylHistory(LAMMPS *lmp)
     : PairGranHookeHistory(lmp)
 {
   R = nullptr;
   H = nullptr;
+  events_new_local_step = 0;
+  events_new_global_step = 0;
+  events_cum_local = 0;
+  events_cum_global = 0;
+  events_cum_global_prev_log = 0;
+  events_last_logged_step = -1;
+  events_log_every = 1000;
+  events_fp = nullptr;
 }
 
 PairGranSpherocylHistory::~PairGranSpherocylHistory()
 {
+  if (events_fp) {
+    fclose(events_fp);
+    events_fp = nullptr;
+  }
   if (allocated) {
     memory->destroy(R);
     memory->destroy(H);
@@ -93,11 +144,13 @@ void PairGranSpherocylHistory::init_style()
   if (comm->ghost_velocity == 0)
     error->all(FLERR, "Pair gran/spherocyl/history requires ghost atoms store velocity (comm_modify vel yes)");
 
-  // granular neighbor list with history
+  // Do NOT use REQ_SIZE: atom_style ellipsoid has no atom->radius array (it is NULL).
+  // REQ_SIZE makes NPairBin access atom->radius[i], which crashes with address-not-mapped.
+  // Use fixed geometric cutoff from init_one() instead.
   if (history)
-    neighbor->add_request(this, NeighConst::REQ_SIZE | NeighConst::REQ_HISTORY);
+    neighbor->add_request(this, NeighConst::REQ_HISTORY);
   else
-    neighbor->add_request(this, NeighConst::REQ_SIZE);
+    neighbor->add_request(this);
 
   dt = update->dt;
 
@@ -133,11 +186,35 @@ void PairGranSpherocylHistory::init_style()
   }
 
   // sanity: the fix must exist and must be wired to this pair
-  if (history) {
+ if (history) {
     if (!fix_history)
       error->all(FLERR, "gran/spherocyl/history: FixNeighHistory is NULL after init_style()");
     fix_history->pair = this;   // keep this explicit for safety
  }
+
+  const bool fresh_events_state =
+      (events_last_logged_step < 0 && events_cum_local == 0 && events_cum_global == 0 &&
+       events_cum_global_prev_log == 0);
+
+  // Open collision-event log on rank 0 once per pair object.
+  // init_style() can be called again during operations like write_restart;
+  // reopening with "w" there would silently truncate the accumulated log.
+  if (comm->me == 0 && events_fp == nullptr) {
+    events_fp = fopen("collision_events.dat", "w");
+    if (!events_fp)
+      error->one(FLERR, "gran/spherocyl/history: could not open collision_events.dat");
+    fprintf(events_fp, "# step new_events_since_last_log global_cumulative_events\n");
+    fflush(events_fp);
+  }
+
+  if (fresh_events_state) {
+    events_new_local_step = 0;
+    events_new_global_step = 0;
+    events_cum_local = 0;
+    events_cum_global = 0;
+    events_cum_global_prev_log = 0;
+    events_last_logged_step = -1;
+  }
 }
 
 double PairGranSpherocylHistory::init_one(int i, int j)
@@ -150,6 +227,14 @@ double PairGranSpherocylHistory::init_one(int i, int j)
   // => |rij| <= (Hi+Hj) + (Ri+Rj)
   double cutoff = (H[i] + H[j]) + (R[i] + R[j]);
   return cutoff;
+}
+
+void *PairGranSpherocylHistory::extract(const char *str, int &dim)
+{
+  dim = 1;
+  if (strcmp(str, "spherocyl_R") == 0) return (void *) R;
+  if (strcmp(str, "spherocyl_H") == 0) return (void *) H;
+  return nullptr;
 }
 
 inline void PairGranSpherocylHistory::axis_from_quat(const double *q, double *u) const
@@ -172,13 +257,12 @@ inline void PairGranSpherocylHistory::closest_approach(const double *xi, const d
                                                       double *del, double *rhoi, double *rhoj,
                                                       double &rsq) const
 {
-  // This is the same logic as your MFIX cfrelvel kernel (Vega-Lago-style).
+  // Mirror OVERLAP_PP geometry logic used in your Fortran collision model.
   // xi,xj = centers
   // ui,uj = unit axes
   // segment parameters lambda in [-Hi,Hi], mu in [-Hj,Hj]
 
   double rij[3] = { xj[0]-xi[0], xj[1]-xi[1], xj[2]-xi[2] };
-  double rijsq = rij[0]*rij[0] + rij[1]*rij[1] + rij[2]*rij[2];
 
   double uidot = ui[0]*rij[0] + ui[1]*rij[1] + ui[2]*rij[2];
   double ujdot = uj[0]*rij[0] + uj[1]*rij[1] + uj[2]*rij[2];
@@ -190,10 +274,7 @@ inline void PairGranSpherocylHistory::closest_approach(const double *xi, const d
 
   if (denom < SMALL) {
     // nearly parallel
-    double tmp = std::fabs(uidot) - (Hi + Hj);
-    double dpar = std::max(0.0, tmp*tmp);
-
-    // fallback for closest points
+    // Keep the same branch structure and clamping behavior as OVERLAP_PP.
     if (uidot != 0.0) {
       lambda = std::copysign(Hi, uidot);
       mu = lambda*udot - ujdot;
@@ -224,15 +305,15 @@ inline void PairGranSpherocylHistory::closest_approach(const double *xi, const d
     }
   }
 
-  // lever arms to closest points
+  // Lever arms to closest points on centerlines
   rhoi[0] = lambda*ui[0]; rhoi[1] = lambda*ui[1]; rhoi[2] = lambda*ui[2];
   rhoj[0] = mu*uj[0];     rhoj[1] = mu*uj[1];     rhoj[2] = mu*uj[2];
 
-  // contact points
+  // Closest points
   double ci[3] = { xi[0] + rhoi[0], xi[1] + rhoi[1], xi[2] + rhoi[2] };
   double cj[3] = { xj[0] + rhoj[0], xj[1] + rhoj[1], xj[2] + rhoj[2] };
 
-  // del = Ci - Cj (vector from j-contact to i-contact)
+  // Keep PairGran sign convention: del = Ci - Cj (j -> i)
   del[0] = ci[0] - cj[0];
   del[1] = ci[1] - cj[1];
   del[2] = ci[2] - cj[2];
@@ -256,6 +337,8 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
   int *ilist, *jlist, *numneigh, **firstneigh;
   int *touch, **firsttouch;
   double *shear, *allshear, **firstshear;
+
+  events_new_local_step = 0;
 
   int shearupdate = 1;
   if (update->setupflag) shearupdate = 0;
@@ -287,6 +370,7 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
   double *rmass = atom->rmass;
   int *type = atom->type;
   int *mask = atom->mask;
+  tagint *tag = atom->tag;
   int nlocal = atom->nlocal;
 
   // --- Robust ellipsoid orientation access (do NOT use atom->quat) ---
@@ -305,7 +389,7 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
 
   double **angmom = atom->angmom;
   if (angmom == nullptr)
-    error->all(FLERR, "gran/spherocyl/history: atom->angmom is NULL. This requires ASPHERE rotational DOFs (fix nve/asphere).");
+    error->all(FLERR, "gran/spherocyl/history: atom->angmom is NULL. This requires rotational DOFs (fix nve/spherocyl or fix nve/asphere).");
 
   inum = list->inum;
   ilist = list->ilist;
@@ -378,42 +462,31 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
       // relative velocity at contact point:
       // vc = (vi + wi x rhoi) - (vj + wj x rhoj)
       //
-      // For ellipsoids/asphere, angular velocity is derived from angular momentum.
+      // Angular velocity is derived from angular momentum using
+      // spherocylinder principal moments (not ellipsoid moments).
       // Use the same conversion LAMMPS uses internally: MathExtra::mq_to_omega().
-      //
-      // principal moments for an ellipsoid (semi-axes = shape[]) are:
-      // I0 = (1/5) m (b^2 + c^2), I1 = (1/5) m (a^2 + c^2), I2 = (1/5) m (a^2 + b^2)
-      // where shape[] = [a,b,c].  LAMMPS uses prefactor INERTIA=0.2 = 1/5.
-
-      constexpr double INERTIA = 0.2;
 
       double omegai[3], omegaj[3];
       double inertia_i[3], inertia_j[3];
 
-      // --- i: quat + shape from ellipsoid bonus ---
-      double *shape_i = bonus[ellipsoid[i]].shape;
-      double *quat_i  = bonus[ellipsoid[i]].quat;
+      // --- i ---
+      double *quat_i = bonus[ellipsoid[i]].quat;
 
       // mass for rotational inertia (use per-atom rmass if present, else type mass)
       double mi_rot = (atom->rmass_flag) ? rmass[i] : atom->mass[type[i]];
 
-      // principal inertias in BODY frame
-      inertia_i[0] = INERTIA * mi_rot * (shape_i[1]*shape_i[1] + shape_i[2]*shape_i[2]);
-      inertia_i[1] = INERTIA * mi_rot * (shape_i[0]*shape_i[0] + shape_i[2]*shape_i[2]);
-      inertia_i[2] = INERTIA * mi_rot * (shape_i[0]*shape_i[0] + shape_i[1]*shape_i[1]);
+      // principal inertias in BODY frame for spherocylinder with geometry (R,H)
+      spherocyl_inertia(mi_rot, ri, H[itype], inertia_i);
 
       // omega in SPACE frame from (angmom, quat, inertia)
       MathExtra::mq_to_omega(angmom[i], quat_i, inertia_i, omegai);
 
-      // --- j: quat + shape from ellipsoid bonus ---
-      double *shape_j = bonus[ellipsoid[j]].shape;
-      double *quat_j  = bonus[ellipsoid[j]].quat;
+      // --- j ---
+      double *quat_j = bonus[ellipsoid[j]].quat;
 
       double mj_rot = (atom->rmass_flag) ? rmass[j] : atom->mass[type[j]];
 
-      inertia_j[0] = INERTIA * mj_rot * (shape_j[1]*shape_j[1] + shape_j[2]*shape_j[2]);
-      inertia_j[1] = INERTIA * mj_rot * (shape_j[0]*shape_j[0] + shape_j[2]*shape_j[2]);
-      inertia_j[2] = INERTIA * mj_rot * (shape_j[0]*shape_j[0] + shape_j[1]*shape_j[1]);
+      spherocyl_inertia(mj_rot, rj, H[jtype], inertia_j);
 
       MathExtra::mq_to_omega(angmom[j], quat_j, inertia_j, omegaj);
 
@@ -429,9 +502,11 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
         omegaj[0]*rhoj[1] - omegaj[1]*rhoj[0]
       };
 
-      vr1 = (v[i][0] + wxc_i[0]) - (v[j][0] + wxc_j[0]);
-      vr2 = (v[i][1] + wxc_i[1]) - (v[j][1] + wxc_j[1]);
-      vr3 = (v[i][2] + wxc_i[2]) - (v[j][2] + wxc_j[2]);
+      // translational-only relative velocity for normal channel
+      // (ω×r omitted: γ_N formula is derived for translational v_rel only)
+      vr1 = v[i][0] - v[j][0];
+      vr2 = v[i][1] - v[j][1];
+      vr3 = v[i][2] - v[j][2];
 
       // normal component (same algebra as parent)
       vnnr = vr1 * delx + vr2 * dely + vr3 * delz;
@@ -477,7 +552,15 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
 
       vrel = std::sqrt(vtr1*vtr1 + vtr2*vtr2 + vtr3*vtr3);
 
-      // shear history effects (identical to parent)
+      // Count each new contact exactly once globally.
+      // With half neighbor lists and newton off, local-local pairs are owned
+      // by the stored i/j ordering (j < nlocal here), while local-ghost pairs
+      // appear on both ranks and need a tag-based ownership filter.
+      if (touch[jj] == 0) {
+        const bool owns_contact =
+          force->newton_pair || j < nlocal || tag[i] < tag[j];
+        if (owns_contact) events_new_local_step++;
+      }
       touch[jj] = 1;
       shear = &allshear[3 * jj];
 
@@ -563,6 +646,29 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
     }
   }
 
+  events_cum_local += events_new_local_step;
+  maybe_log_collision_events();
+
   if (vflag_fdotr) virial_fdotr_compute();
 }
 
+void PairGranSpherocylHistory::maybe_log_collision_events()
+{
+  if (events_log_every <= 0) return;
+
+  const long long step = static_cast<long long>(update->ntimestep);
+  const bool at_interval = (step % events_log_every == 0);
+  const bool at_run_end = (step == static_cast<long long>(update->laststep));
+  if (!at_interval && !at_run_end) return;
+  if (step == events_last_logged_step) return;
+
+  MPI_Allreduce(&events_cum_local, &events_cum_global, 1, MPI_LONG_LONG, MPI_SUM, world);
+  events_new_global_step = events_cum_global - events_cum_global_prev_log;
+
+  if (comm->me == 0 && events_fp) {
+    fprintf(events_fp, "%lld %lld %lld\n", step, events_new_global_step, events_cum_global);
+    fflush(events_fp);
+  }
+  events_cum_global_prev_log = events_cum_global;
+  events_last_logged_step = step;
+}

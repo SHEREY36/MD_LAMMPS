@@ -25,6 +25,7 @@ class PairGranSpherocylHistory : public PairGranHookeHistory {
   void coeff(int, char **) override;
   void init_style() override;
   double init_one(int, int) override;
+  void *extract(const char *, int &) override;
 
  protected:
   // Per-type spherocylinder geometry:
@@ -33,7 +34,19 @@ class PairGranSpherocylHistory : public PairGranHookeHistory {
   double *R;
   double *H;
 
+  // Lightweight contact-event counter:
+  // event = pair transitions from non-contact to contact.
+  long long events_new_local_step;
+  long long events_new_global_step;
+  long long events_cum_local;
+  long long events_cum_global;
+  long long events_cum_global_prev_log;
+  long long events_last_logged_step;
+  int events_log_every;
+  FILE *events_fp;
+
   void allocate_sc();
+  void maybe_log_collision_events();
 
   // Extract unit axis u from quaternion (atom_style ellipsoid)
   inline void axis_from_quat(const double *q, double *u) const;
@@ -56,4 +69,3 @@ class PairGranSpherocylHistory : public PairGranHookeHistory {
 
 #endif
 #endif
-

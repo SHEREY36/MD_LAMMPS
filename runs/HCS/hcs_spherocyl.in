@@ -1,0 +1,244 @@
+# ============================================================
+# Homogeneous Cooling State (HCS) for smooth spherocylinders
+#
+# Key points:
+# 1) Smooth model: axial spin about rod axis is removed in fix nve/spherocyl
+#    (implemented in src/GRANULAR/fix_nve_spherocyl.cpp).
+# 2) All runs begin from a common non-dissipative state:
+#      - overlap cleanup
+#      - MB init
+#      - e=1 (gamman=0) equilibration
+#    Then dissipation is switched to target e and timestep is reset.
+# 3) Temperatures are computed from kinetic energies:
+#      T_tr  = 2*K_tr/(3N)
+#      T_rot = K_rot/N          (2 rotational DOF)
+#      T     = (3*T_tr + 2*T_rot)/5
+# ============================================================
+
+units           lj
+dimension       3
+atom_style      ellipsoid
+atom_modify     map array
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+# -------------------------
+# User parameters
+# -------------------------
+variable        N_part equal 40000
+variable        phi    equal 0.01
+variable        d      equal 1.0
+variable        AR     equal 2.0
+variable        rho_p  equal 1.0
+
+variable        mode string B
+variable        e      equal 0.8
+variable        mu     equal 0.0
+
+variable        kn     equal 3.26e8
+variable        kt     equal $(2.0/7.0*v_kn)
+variable        gammat equal 0.0
+variable        dampflag equal 1
+
+variable        T0            equal 1.0
+variable        T_tr0         equal 1.0
+variable        T_rot0_modeA  equal 0.01
+variable        seed          equal 12349
+
+variable        Nrelax_steps        equal 5000
+variable        Nequil_nodiss_steps equal 200000
+variable        Nprod_steps         equal 10000000
+variable        t_prod_target       equal 500.0
+
+# -------------------------
+# Geometry
+# AR = (Lcyl + d)/d
+# -------------------------
+variable        R      equal 0.5*${d}
+variable        Lcyl   equal (${AR}-1.0)*${d}
+variable        H      equal 0.5*${Lcyl}
+variable        C      equal ${R}+${H}
+variable        Ltot   equal ${Lcyl}+${d}
+variable        ncell  equal ceil(${N_part}^(1.0/3.0))
+
+variable        Vcaps  equal (4.0/3.0)*PI*${R}*${R}*${R}
+variable        Vcyl   equal PI*${R}*${R}*(2.0*${H})
+variable        Vp     equal ${Vcaps}+${Vcyl}
+variable        m      equal ${rho_p}*${Vp}
+variable        meff   equal ${m}/2.0
+
+# Principal moments used in custom integrator (for temperature diagnostics)
+variable        Iperp equal (PI/48.0)*${rho_p}*${d}*${d}*${Lcyl}*${Lcyl}*${Lcyl} + &
+                        (PI/24.0)*${rho_p}*${d}*${d}*${d}*${Lcyl}*${Lcyl} + &
+                        (3.0*PI/64.0)*${rho_p}*${d}*${d}*${d}*${d}*${Lcyl} + &
+                        (PI/60.0)*${rho_p}*${d}*${d}*${d}*${d}*${d}
+variable        Ipar  equal (PI/32.0)*${rho_p}*${d}*${d}*${d}*${d}*${Lcyl} + &
+                        (PI/60.0)*${rho_p}*${d}*${d}*${d}*${d}*${d}
+
+# Damping:
+# - non-dissipative stage uses gamman = 0
+# - production uses gamman_diss from target e
+variable        gamman_nodiss equal 0.0
+variable        lne_diss      equal abs(ln(${e}))
+variable        gamman_diss   equal 2.0*${lne_diss}*sqrt(${kn}/${meff})/sqrt(PI*PI+${lne_diss}*${lne_diss})
+
+# timestep from worst (dissipative) collision time
+variable        omega_d_sq equal ${kn}/${meff}-(${gamman_diss}/2.0)^2
+variable        tc         equal PI/sqrt(${omega_d_sq})
+variable        dt_opt     equal ${tc}/50.0
+variable        Nprod_blocks equal ceil(${t_prod_target}/(${Nprod_steps}*${dt_opt}))
+timestep        ${dt_opt}
+
+print "========================================"
+print "SPHEROCYL HCS - MODE ${mode}"
+print "N=${N_part}, phi=${phi}, AR=${AR}, e=${e}"
+print "R=${R}, H=${H}, Ltot=${Ltot}, m=${m}"
+print "gamman_nodiss=${gamman_nodiss}, gamman_diss=${gamman_diss}"
+print "tc=${tc}, dt=${dt_opt}"
+print "Target production time = ${t_prod_target}"
+print "Computed production blocks = ${Nprod_blocks}"
+print "========================================"
+
+# -------------------------
+# Box setup from phi (orthogonal)
+# -------------------------
+variable        Vbox  equal ${N_part}*${Vp}/${phi}
+variable        L     equal ${Vbox}^(1.0/3.0)
+lattice         sc 1.0
+region          simbox block 0 ${ncell} 0 ${ncell} 0 ${ncell} units lattice
+create_box      1 simbox
+create_atoms    1 region simbox
+variable        Nnow equal count(all)
+variable        Ndel equal $(v_Nnow - v_N_part)
+if "${Ndel} > 0" then "delete_atoms random count ${Ndel} no all NULL ${seed}"
+variable        scale equal ${L}/${ncell}
+change_box      all x scale ${scale} y scale ${scale} z scale ${scale} remap
+
+set             type 1 mass ${m}
+set             type 1 shape ${R} ${R} ${C}
+set             group all quat/random ${seed}
+
+pair_style      gran/spherocyl/history ${kn} ${kt} ${gamman_nodiss} ${gammat} ${mu} ${dampflag}
+pair_coeff      * * ${R} ${H}
+
+neighbor        0.5 bin
+neigh_modify    delay 0 every 1 check yes
+
+fix             int all nve/spherocyl
+
+# -------------------------
+# Stage 1: overlap cleanup (still non-dissipative contact law)
+# -------------------------
+fix             damp all viscous 1.0
+run             ${Nrelax_steps}
+unfix           damp
+
+# -------------------------
+# Stage 2: MB initialization
+# -------------------------
+if "${mode} == A" then &
+    "velocity all create ${T_tr0} ${seed} mom yes rot no dist gaussian" &
+else &
+    "velocity all create ${T0} ${seed} mom yes rot no dist gaussian"
+
+if "${mode} == A" then &
+    "variable T_rot_target equal ${T_rot0_modeA}" &
+else &
+    "variable T_rot_target equal ${T0}"
+
+variable        Lstd equal sqrt(${m}*${T0})
+variable        seed_lx equal ${seed}+101
+variable        seed_ly equal ${seed}+202
+variable        seed_lz equal ${seed}+303
+variable        lmx atom normal(0.0,v_Lstd,v_seed_lx)
+variable        lmy atom normal(0.0,v_Lstd,v_seed_ly)
+variable        lmz atom normal(0.0,v_Lstd,v_seed_lz)
+set             group all angmom v_lmx v_lmy v_lmz
+
+compute         KEtr all ke
+compute         am all property/atom angmomx angmomy angmomz
+compute         quat all property/atom quati quatj quatk quatw
+
+# Body-axis unit vector from quaternion (third column of rotation matrix)
+variable        ux atom 2.0*(c_quat[1]*c_quat[3] + c_quat[2]*c_quat[4])
+variable        uy atom 2.0*(c_quat[2]*c_quat[3] - c_quat[1]*c_quat[4])
+variable        uz atom 1.0 - 2.0*(c_quat[1]*c_quat[1] + c_quat[2]*c_quat[2])
+
+variable        L2 atom c_am[1]*c_am[1] + c_am[2]*c_am[2] + c_am[3]*c_am[3]
+variable        Lpar atom c_am[1]*v_ux + c_am[2]*v_uy + c_am[3]*v_uz
+variable        Krot_atom atom 0.5*((v_L2 - v_Lpar*v_Lpar)/(v_Iperp+1.0e-30) + (v_Lpar*v_Lpar)/(v_Ipar+1.0e-30))
+compute         KErot all reduce sum v_Krot_atom
+run             0
+
+# Enforce smooth-rod kinematics at initialization too (remove axial spin)
+variable        amx_noax atom c_am[1]-v_Lpar*v_ux
+variable        amy_noax atom c_am[2]-v_Lpar*v_uy
+variable        amz_noax atom c_am[3]-v_Lpar*v_uz
+set             group all angmom v_amx_noax v_amy_noax v_amz_noax
+run             0
+
+variable        Trot_raw equal c_KErot/${N_part}
+variable        sf_rot equal sqrt(v_T_rot_target/(v_Trot_raw+1.0e-30))
+variable        amx atom v_sf_rot*c_am[1]
+variable        amy atom v_sf_rot*c_am[2]
+variable        amz atom v_sf_rot*c_am[3]
+set             group all angmom v_amx v_amy v_amz
+run             0
+
+variable        Ttr_init equal 2.0*c_KEtr/(3.0*${N_part})
+variable        Trot_init equal c_KErot/${N_part}
+print "Initialized T_tr = ${Ttr_init}"
+print "Initialized T_rot = ${Trot_init}"
+
+# -------------------------
+# Stage 3: common pre-HCS equilibration at e=1 (gamman=0)
+# -------------------------
+print "Nondissipative pre-equilibration: ${Nequil_nodiss_steps} steps"
+run             ${Nequil_nodiss_steps}
+write_restart   restart_after_nodiss_hcs_${mode}_e${e}.dat
+
+# -------------------------
+# Stage 4: switch to target dissipation and start HCS clock
+# -------------------------
+unfix           int
+pair_style      gran/spherocyl/history ${kn} ${kt} ${gamman_diss} ${gammat} ${mu} ${dampflag}
+pair_coeff      * * ${R} ${H}
+fix             int all nve/spherocyl
+reset_timestep  0
+run             0
+
+variable        t       equal time
+variable        Ttr     equal 2.0*c_KEtr/(3.0*${N_part})
+variable        Tro     equal c_KErot/${N_part}
+variable        ratio   equal v_Ttr/(v_Tro+1.0e-30)
+variable        Ttotal  equal (3.0*v_Ttr+2.0*v_Tro)/5.0
+
+thermo          1000
+thermo_style    custom step time v_Ttr v_Tro v_ratio v_Ttotal
+
+fix             log_temps all print 200 "${t} ${Ttr} ${Tro} ${ratio} ${Ttotal}" &
+                file hcs_temperatures_${mode}_e${e}.dat screen no title "# time T_trans T_rot T_tr/T_rot T_total"
+
+print "Production: ${Nprod_blocks} blocks x ${Nprod_steps} steps"
+print "Mode ${mode}: e=${e}"
+
+variable        ib loop ${Nprod_blocks}
+label           loop_prod
+run             ${Nprod_steps}
+next            ib
+jump            SELF loop_prod
+
+# Convert collision_events.dat to a per-particle collision metric file:
+#   col1: time
+#   col2: cumulative collisions per particle
+#   col3: instantaneous collision rate per particle
+shell awk 'BEGIN{N=${N_part};dt=${dt_opt};print "# time cpp coll_rate_per_particle"} NR>1{t=$1*dt;cpp=$3/N;if(NR==2){rate=0.0}else{rate=(cpp-cpp_prev)/(t-t_prev+1.0e-30)};printf "%.12g %.12g %.12g\n",t,cpp,rate;t_prev=t;cpp_prev=cpp}' collision_events.dat > collision_cpp_${mode}_e${e}.dat
+
+write_restart   restart_hcs_${mode}_e${e}.dat
+
+print "============================================"
+print "Done. Output file:"
+print "  hcs_temperatures_${mode}_e${e}.dat"
+print "  collision_cpp_${mode}_e${e}.dat"
+print "============================================"
