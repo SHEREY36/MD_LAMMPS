@@ -1,0 +1,148 @@
+# ============================================================
+# REGRESSION TEST CASE 4: Criss-cross OFF-CENTER collision
+# ============================================================
+# Same setup as Case 3 but rod2 is shifted by delta = H/2 along X.
+# This shifts the contact point away from rod1's center, creating
+# a nonzero lever arm and thus a torque => rotation post-collision.
+#
+# CLOSEST APPROACH ANALYSIS (Vega-Lago):
+#   Rod1 backbone: (t, +y0, 0),        t in [-H, H]  (rod along X)
+#   Rod2 backbone: (delta+0, -y0, s),  s in [-H, H]  (rod along Z, shifted in X)
+#
+#   Minimize dist^2 = (t - delta)^2 + (2y0)^2 + s^2
+#   => t* = delta (within [-H,H] since delta=H/2), s* = 0
+#
+#   Contact point on rod1: (delta, +y0, 0)   [OFF rod1's center by delta]
+#   Contact point on rod2: (delta, -y0, 0)   [rod2's center in XZ plane]
+#
+# TORQUE ON ROD1:
+#   Lever arm r = contact_pt - rod1_center = (delta, 0, 0)
+#   Force F = (0, -F_n, 0)  [normal force along Y toward rod1]
+#   Torque = r x F = (delta, 0, 0) x (0, -Fn, 0) = (0, 0, -delta*Fn)
+#   => Rotation about Z axis: rod1 spins in XY plane
+#
+# TORQUE ON ROD2:
+#   Lever arm r = (0, 0, 0)  [contact at rod2's center s*=0]
+#   => No torque on rod2 (rod2 does NOT rotate)
+#
+# EXPECTED PHYSICS:
+#   - Rod1: gains angular momentum about Z (spins in XY plane)
+#   - Rod2: no angular momentum gained (contact at its center)
+#   - Linear momenta along Y exchanged with e=0.9 damping
+#   - This is the CONTROL case proving rotation detection works
+#
+# KEY NUMBERS:
+#   delta = H/2 = R = 1.058e-4 m
+#   rod1 rotates; rod2 does not
+#
+# ---- Parameters ----
+variable D equal 2.116e-4
+variable R equal ${D}/2.0
+variable H equal 2.0*${R}
+variable C equal ${R}+${H}
+variable delta equal 0.5*${H}   # = R = 1.058e-4 m, lever arm on rod1
+
+units           si
+dimension       3
+atom_style      ellipsoid
+atom_modify     map array
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+region          box block -0.005 0.005 -0.005 0.005 -0.005 0.005 units box
+create_box      1 box
+
+# Contact C-C distance along Y = 2R (barrel contact)
+variable contact_dist equal 2.0*${R}
+variable y0 equal 0.525*${contact_dist}    # 1.05 * R
+
+# ---- Create particles ----
+# Rod1 at (0, +y0, 0)       [rod along X, centered at origin in XZ]
+# Rod2 at (delta, -y0, 0)   [rod along Z, shifted by delta in X]
+create_atoms    1 single 0.0      ${y0} 0.0 units box
+create_atoms    1 single ${delta} -${y0} 0.0 units box
+
+# ---- Mass ----
+variable rho equal 2500.0
+variable Vsc equal PI*${R}*${R}*(2.0*${H}) + (4.0/3.0)*PI*${R}*${R}*${R}
+variable m   equal ${rho}*${Vsc}
+set type 1 mass ${m}
+set type 1 shape ${R} ${R} ${C}
+
+# ---- Orientations ----
+# Rod1 along X: 90 deg about Y
+set atom 1 quat 0.0 1.0 0.0 90.0
+# Rod2 along Z: identity
+set atom 2 quat 0.0 0.0 1.0 0.0
+
+# ---- Velocities: approach along Y only ----
+velocity all set 0.0 0.0 0.0
+velocity atom 1 set 0.0 -1.0 0.0
+velocity atom 2 set 0.0  1.0 0.0
+
+# ---- Contact parameters ----
+variable e      equal 0.9
+variable kn     equal 1.0e3
+variable kt     equal 0.286*${kn}
+variable meff   equal 0.5*${m}
+variable ln_e   equal log(${e})
+variable eta    equal sqrt(${ln_e}*${ln_e}/(PI*PI+${ln_e}*${ln_e}+1.0e-30))
+variable gamman equal 2.0*${eta}*sqrt(${kn}/${meff})
+variable gammat equal 0.0
+variable mu     equal 0.0
+variable dampflag equal 1
+
+pair_style  gran/spherocyl/history ${kn} ${kt} ${gamman} ${gammat} ${mu} ${dampflag}
+pair_coeff  * * ${R} ${H}
+
+neighbor        5.0e-4 bin
+neigh_modify    delay 0 every 1 check yes
+
+fix             int all nve/spherocyl
+
+# ---- Diagnostic variables ----
+variable dx      equal x[2]-x[1]
+variable dy      equal y[2]-y[1]
+variable dz      equal z[2]-z[1]
+variable rcc     equal sqrt(v_dx*v_dx+v_dy*v_dy+v_dz*v_dz)
+variable overlap equal 2.0*${R}-v_rcc    # >0 during contact
+variable vy1     equal vy[1]
+variable vy2     equal vy[2]
+
+# Angular momentum components for each particle
+variable amz1   equal angmomz[1]
+variable amz2   equal angmomz[2]
+
+timestep        1.0e-7
+
+thermo          50
+thermo_style    custom step time v_rcc v_overlap v_vy1 v_vy2 v_amz1 v_amz2 ke
+
+fix clog all print 10 &
+    "$(step) $(time) $(v_rcc) $(v_overlap) $(vy[1]) $(vy[2]) $(angmomz[1]) $(angmomz[2])" &
+    file case4_contact_log.dat screen no &
+    title "step time rcc overlap vy1 vy2 amz1 amz2"
+
+compute  quat all property/atom quati quatj quatk quatw
+dump 1 all custom 10 case4.dump id type x y z vx vy vz &
+    angmomx angmomy angmomz &
+    c_quat[1] c_quat[2] c_quat[3] c_quat[4]
+dump_modify 1 sort id
+
+variable lever equal ${delta}
+variable twoR  equal 2.0*${R}
+
+print ""
+print "=== CASE 4: CRISS-CROSS OFF-CENTER (control: rotation expected) ==="
+print "Rod1 along X at (0,+y0,0). Rod2 along Z at (delta,-y0,0)."
+print "  delta = H/2 = ${lever} m  (lever arm on rod1)"
+print "  contact_dist = 2R = ${twoR} m"
+print "EXPECTED:"
+print "  - Rod1 gains angmomZ (spins in XY plane) post-collision"
+print "  - Rod2 angmomZ stays ~0 (contact at rod2 center)"
+print "  - Both rods rebound along Y"
+print "VALIDATION: amz1 != 0, amz2 ~ 0 after contact ends."
+print ""
+
+run 3000

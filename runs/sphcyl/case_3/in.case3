@@ -1,0 +1,158 @@
+# ----------------------------------------------------
+# Hard spherocylinder collision test (SI, MFIX-like)
+# Two particles start near contact and collide quickly.
+# ----------------------------------------------------
+
+units           si
+dimension       3
+atom_style      ellipsoid
+atom_modify     map array    # required for x[ID] indexed variables
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+# ---- Domain ----
+region          box block -0.01 0.01 -0.01 0.01 -0.01 0.01 units box
+create_box      1 box
+
+# ---- Geometry (MFIX diameter) ----
+variable D equal 2.116e-4
+variable R equal ${D}/2.0
+
+# H here is the half-cylinder length (your pair_coeff convention)
+variable H equal 2.0*${R}
+
+# Ellipsoid kinematics proxy semi-axis along rod axis:
+# (R, R, R+H)
+variable C equal ${R}+${H}
+variable delta equal 0.5*${H}   # = R = 1.058e-4 m, lever arm on rod1
+
+# ---- Place particles close so they collide quickly ----
+# Contact when separation_x = 2R = D
+# Choose separation = 1.05*D (small gap 0.05D)
+variable sep equal 1.05*${D}
+variable x0  equal 2.0*${sep}
+
+# Contact C-C distance along Y = 2R (barrel contact)
+variable contact_dist equal 5.0*${R}
+variable y0 equal 0.525*${contact_dist}    # 1.05 * R
+
+# ---- Create particles ----
+# Rod1 at (0, +y0, 0)       [rod along X, centered at origin in XZ]
+# Rod2 at (delta, -y0, 0)   [rod along Z, shifted by delta in X]
+create_atoms    1 single 0.0      ${y0} 0.0 units box
+create_atoms    1 single ${delta} -${y0} 0.0 units box
+
+# ---- Mass: set explicitly (recommended) ----
+# Spherocylinder volume = pi R^2 (2H) + 4/3 pi R^3
+variable rho equal 2500.0
+variable Vsc equal PI*${R}*${R}*(2.0*${H}) + (4.0/3.0)*PI*${R}*${R}*${R}
+variable m   equal ${rho}*${Vsc}
+set type 1 mass ${m}
+
+# Kinematic shape used by atom_style ellipsoid (for quat/angmom machinery)
+set type 1 shape ${R} ${R} ${C}
+
+# ---- Different orientations ----
+# atom1: no rotation (rod axis along z), identity orientation
+# set quat uses axis-angle: ax ay az angle_degrees
+set atom 1 quat 0.0 1.0 0.0 90.0
+
+# atom2: rotate +90 deg about y -> rod axis along x
+# set quat uses axis-angle: ax ay az angle_degrees
+set atom 2 quat 0.0 0.0 1.0 0.0
+
+group left  id 1
+group right id 2
+
+# ---- Approach velocities ----
+velocity left  set  0.0 -1.0 0.0
+velocity right set  0.0  1.0 0.0
+
+# ---- Contact params ----
+# kn=1e3 chosen for OVITO visibility: T_c=156 steps, delta_max=9.4%R (~10 um)
+# (kn=1e5 gives T_c=16 steps and delta_max=0.1%R — physically correct but invisible)
+# gamman formula: LAMMPS gran/hooke uses F_damp = meff*gamman*vn  =>  gamman in [1/s]
+#   gamman = 2*eta*sqrt(kn/meff)  NOT sqrt(kn*meff)  [kn*meff gives kg/s = wrong units]
+variable e  equal 0.9          # <-- restitution you will vary
+variable kn equal 3.26e8
+variable kt equal 0.286*${kn}
+variable meff equal 0.5*${m}   # identical particles
+
+# Spring-dashpot mapping (same formula you used earlier)
+# IMPORTANT: use ln() (natural log), not log() (base-10 in LAMMPS variables).
+variable ln_e equal ln(${e})
+variable eta  equal sqrt( (${ln_e}*${ln_e}) / (PI*PI + ${ln_e}*${ln_e} + 1.0e-30) )
+variable gamman equal 2.0*${eta}*sqrt(${kn}/${meff})
+
+variable gammat equal 0.0
+variable mu     equal 0.0
+variable dampflag equal 1
+
+# --- Collision time -> timestep ---
+variable        omega_d_sq equal ${kn}/${meff}-(${gamman}/2.0)^2
+variable        tc     equal PI/sqrt(${omega_d_sq})
+variable        dt_opt equal ${tc}/50.0
+
+timestep        ${dt_opt}
+
+pair_style  gran/spherocyl/history ${kn} ${kt} ${gamman} ${gammat} ${mu} ${dampflag}
+pair_coeff  * * ${R} ${H}
+
+neighbor        2.5e-4 bin
+neigh_modify    delay 0 every 1 check yes
+
+fix             int all nve/spherocyl
+
+# ---- Contact detection diagnostic variables ----
+# This diagnostic block is for the current PARALLEL head-on case only.
+# For co-linear, parallel rods:
+#   seg_dist = max(0, rcc - 2H)
+#   overlap  = 2R - seg_dist
+# Contact onset is at rcc = 2H + 2R.
+
+variable dx         equal x[2]-x[1]
+variable dy         equal y[2]-y[1]
+variable dz         equal z[2]-z[1]
+variable rcc        equal sqrt(v_dx*v_dx+v_dy*v_dy+v_dz*v_dz)
+variable sphere_gap equal v_rcc-2.0*${R}
+variable seg_raw    equal v_rcc-2.0*${H}
+variable seg_dist   equal 0.5*(v_seg_raw+abs(v_seg_raw))
+variable overlap    equal 2.0*${R}-v_seg_dist
+variable tip_gap    equal v_rcc-(2.0*${H}+2.0*${R})
+
+# ---- thermo: rcc, sphere_gap, overlap visible at every output step ----
+thermo          1000
+thermo_style    custom step time etotal v_rcc v_sphere_gap v_overlap
+
+# contact_log.dat: finer cadence to resolve short contact (tc ~ 50 steps here)
+# columns: step  time  rcc  sphere_gap  seg_dist  overlap  tip_gap
+fix clog all print 10 "$(step) $(time) $(v_rcc) $(v_sphere_gap) $(v_seg_dist) $(v_overlap) $(v_tip_gap)" file contact_log.dat screen no title "step time rcc sphere_gap seg_dist overlap tip_gap"
+
+# ---- Dump for OVITO ----
+# OVITO spherocylinder mapping fields:
+#   Radius            = R
+#   Aspherical Shape  = (R, 0, 2H)  [radius, unused, cylinder length]
+#   Orientation       = quaternion (X,Y,Z,W)
+variable ov_radius atom ${R}
+variable ov_shx    atom ${R}
+variable ov_shy    atom 0.0
+variable ov_shz    atom 2.0*${H}
+compute  quat all property/atom quati quatj quatk quatw
+compute  am all property/atom angmomx angmomy angmomz
+dump     1 all custom 1000 sphcyl.dump id type x y z vx vy vz v_ov_radius v_ov_shx v_ov_shy v_ov_shz c_quat[1] c_quat[2] c_quat[3] c_quat[4] angmomx angmomy angmomz
+dump_modify 1 sort id
+
+# ---- Print expected contact geometry before run ----
+variable twoR  equal 2.0*${R}
+variable rcc_contact equal 2.0*${H}+2.0*${R}
+print ""
+print "=== SPHEROCYLINDER CONTACT GEOMETRY PROOF ==="
+print "  parallel head-on end-cap collision (both rods along x)"
+print "  Sphere-sphere threshold        2R      = ${twoR} m"
+print "  Spherocyl contact onset   2H + 2R      = ${rcc_contact} m"
+print "  => In contact_log.dat: overlap crosses >0 only during contact."
+print "  NOTE: epair=0 always is NORMAL for granular (non-conservative contact, no potential tally)."
+print ""
+
+run 1000000

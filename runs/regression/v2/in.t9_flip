@@ -1,0 +1,34 @@
+# T9 Lees-Edwards box flips with remap v (patched fix deform): peculiar momentum must be
+# conserved to round-off through every flip (unpatched LAMMPS kicks atoms by +-gdot*Ly).
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data rods_ar2_T1.data
+set type 1 mass 1.000000357564170
+change_box all triclinic
+velocity all scale 300.0
+compute am0 all property/atom angmomx angmomy angmomz
+run 0
+variable amx atom sqrt(300.0)*c_am0[1]
+variable amy atom sqrt(300.0)*c_am0[2]
+variable amz atom sqrt(300.0)*c_am0[3]
+set group all angmom v_amx v_amy v_amz
+variable meff equal 0.5
+variable gref equal 2.26*sqrt(300.0)
+variable kn equal 5.0*v_meff*v_gref^2/(4.0*0.004^2.5)
+variable lne equal abs(ln(0.7))
+variable eta equal sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne)
+pair_style gran/spherocyl/mfix/history ${kn} 0 ${eta} 0 0 1
+pair_coeff * * 0.5 0.5
+neighbor 0.5 bin
+neigh_modify delay 0 every 1 check yes one 200 page 20000
+fix int all nve/spherocyl
+timestep $(2.94*0.004/v_gref/40.0)
+velocity all ramp vx 0.0 $(1.8*ly) y $(ylo) $(yhi) sum yes
+fix shear all deform 1 xy erate 1.8 remap v units box
+variable nwin equal round(0.25/(1.8*dt))
+fix diag all spherocyl/diag ${nwin} t9 sample $(round(v_nwin/10))
+run $(16*v_nwin)

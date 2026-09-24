@@ -15,6 +15,7 @@
 #include "neighbor.h"
 #include "update.h"
 #include "atom_vec_ellipsoid.h"
+#include "fix_spherocyl_diag.h"
 
 #include <cmath>
 #include <cstdio>
@@ -23,11 +24,11 @@
 using namespace LAMMPS_NS;
 using MathConst::MY_PI;
 
-namespace {
 // Principal moments for a 3D spherocylinder (capsule):
 // diameter = d = 2R, cylindrical section length = lcyl = 2H.
 // Axis of symmetry is body-z, so Ixx=Iyy=I_perp and Izz=I_parallel.
-inline void spherocyl_inertia(double mass, double radius, double half_cyl, double *inertia)
+void PairGranSpherocylHistory::spherocyl_inertia(double mass, double radius, double half_cyl,
+                                                 double *inertia)
 {
   const double d = 2.0 * radius;
   const double lcyl = 2.0 * half_cyl;
@@ -57,7 +58,6 @@ inline void spherocyl_inertia(double mass, double radius, double half_cyl, doubl
   inertia[1] = iperp;
   inertia[2] = ipar;
 }
-}    // namespace
 
 PairGranSpherocylHistory::PairGranSpherocylHistory(LAMMPS *lmp)
     : PairGranHookeHistory(lmp)
@@ -72,6 +72,17 @@ PairGranSpherocylHistory::PairGranSpherocylHistory(LAMMPS *lmp)
   events_last_logged_step = -1;
   events_log_every = 1000;
   events_fp = nullptr;
+  diag = nullptr;
+  // shear displacement (3) + per-contact collision record for fix spherocyl/diag
+  size_history = NSHEAR + NDIAG;
+  // The neighbor list is NOT a size (REQ_SIZE) list (atom_style ellipsoid has no
+  // radius), so NPair never sets the "touching" history bit.  Without this flag
+  // FixNeighHistory::post_neighbor() drops the history (touch flag, shear
+  // displacement, collision record) of every contact that is in progress when
+  // the neighbor list is rebuilt.  With beyond_contact = 1 the history of every
+  // pair found in the old partner lists (= pairs that were touching) is kept,
+  // exactly as pair_style granular does when it does not request REQ_SIZE.
+  beyond_contact = 1;
 }
 
 PairGranSpherocylHistory::~PairGranSpherocylHistory()
@@ -326,7 +337,6 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
   ev_init(eflag, vflag);
 
   int i, j, ii, jj, inum, jnum;
-  double xtmp, ytmp, ztmp;
   double delx, dely, delz, fx, fy, fz;
   double ri, rj, radsum, rsq, r, rinv, rsqinv;
   double vr1, vr2, vr3, vnnr, vn1, vn2, vn3, vt1, vt2, vt3;
@@ -339,6 +349,7 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
   double *shear, *allshear, **firstshear;
 
   events_new_local_step = 0;
+  if (diag) diag->pair_begin();
 
   int shearupdate = 1;
   if (update->setupflag) shearupdate = 0;
@@ -402,9 +413,6 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
   // loop over neighbors
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
-    xtmp = x[i][0];
-    ytmp = x[i][1];
-    ztmp = x[i][2];
 
     int itype = type[i];
     ri = R[itype];
@@ -435,18 +443,18 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
         error->one(FLERR, j, "gran/spherocyl/history: atom j has no ellipsoid data (ellipsoid[j] < 0)");
       axis_from_quat(bonus[ellipsoid[j]].quat, uj);
 
-
       // closest approach between centerline segments
       double del[3], rhoi[3], rhoj[3];
       closest_approach(x[i], x[j], ui, uj, H[itype], H[jtype], del, rhoi, rhoj, rsq);
 
-      // if not in contact: reset history (exactly like parent)
+      double *hist = &allshear[size_history * jj];
+      shear = hist;
+
+      // if not in contact: close the collision record, then reset history
       if (rsq >= radsum * radsum) {
+        if (touch[jj] && diag) diag_release(i, j, nlocal, hist, rhoi, rhoj);
         touch[jj] = 0;
-        shear = &allshear[3 * jj];
-        shear[0] = 0.0;
-        shear[1] = 0.0;
-        shear[2] = 0.0;
+        memset(hist, 0, size_history * sizeof(double));
         continue;
       }
 
@@ -459,51 +467,8 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
       rinv = 1.0 / (r + 1e-30);
       rsqinv = 1.0 / (rsq + 1e-30);
 
-      // relative velocity at contact point:
-      // vc = (vi + wi x rhoi) - (vj + wj x rhoj)
-      //
-      // Angular velocity is derived from angular momentum using
-      // spherocylinder principal moments (not ellipsoid moments).
-      // Use the same conversion LAMMPS uses internally: MathExtra::mq_to_omega().
-
-      double omegai[3], omegaj[3];
-      double inertia_i[3], inertia_j[3];
-
-      // --- i ---
-      double *quat_i = bonus[ellipsoid[i]].quat;
-
-      // mass for rotational inertia (use per-atom rmass if present, else type mass)
-      double mi_rot = (atom->rmass_flag) ? rmass[i] : atom->mass[type[i]];
-
-      // principal inertias in BODY frame for spherocylinder with geometry (R,H)
-      spherocyl_inertia(mi_rot, ri, H[itype], inertia_i);
-
-      // omega in SPACE frame from (angmom, quat, inertia)
-      MathExtra::mq_to_omega(angmom[i], quat_i, inertia_i, omegai);
-
-      // --- j ---
-      double *quat_j = bonus[ellipsoid[j]].quat;
-
-      double mj_rot = (atom->rmass_flag) ? rmass[j] : atom->mass[type[j]];
-
-      spherocyl_inertia(mj_rot, rj, H[jtype], inertia_j);
-
-      MathExtra::mq_to_omega(angmom[j], quat_j, inertia_j, omegaj);
-
-      // now omega x rho
-      double wxc_i[3] = {
-        omegai[1]*rhoi[2] - omegai[2]*rhoi[1],
-        omegai[2]*rhoi[0] - omegai[0]*rhoi[2],
-        omegai[0]*rhoi[1] - omegai[1]*rhoi[0]
-      };
-      double wxc_j[3] = {
-        omegaj[1]*rhoj[2] - omegaj[2]*rhoj[1],
-        omegaj[2]*rhoj[0] - omegaj[0]*rhoj[2],
-        omegaj[0]*rhoj[1] - omegaj[1]*rhoj[0]
-      };
-
-      // translational-only relative velocity for normal channel
-      // (ω×r omitted: γ_N formula is derived for translational v_rel only)
+      // translational-only relative velocity for the normal channel
+      // (omega x rho omitted by design: gamma_n is defined for translational v_rel)
       vr1 = v[i][0] - v[j][0];
       vr2 = v[i][1] - v[j][1];
       vr3 = v[i][2] - v[j][2];
@@ -521,11 +486,11 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
 
       // effective mass logic (copied from parent)
       if (atom->rmass_flag) {
-  	mi = rmass[i];
-  	mj = rmass[j];
+        mi = rmass[i];
+        mj = rmass[j];
       } else {
-  	mi = atom->mass[type[i]];
-  	mj = atom->mass[type[j]];
+        mi = atom->mass[type[i]];
+        mj = atom->mass[type[j]];
       }
 
       if (fix_rigid) {
@@ -545,7 +510,6 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
       ccel = kn * (radsum - r) * rinv - damp;
       if (limit_damping && (ccel < 0.0)) ccel = 0.0;
 
-      // tangential relative velocity used for history (same as parent, but now vt already includes rotation)
       vtr1 = vt1;
       vtr2 = vt2;
       vtr3 = vt3;
@@ -556,13 +520,13 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
       // With half neighbor lists and newton off, local-local pairs are owned
       // by the stored i/j ordering (j < nlocal here), while local-ghost pairs
       // appear on both ranks and need a tag-based ownership filter.
-      if (touch[jj] == 0) {
+      const int newcontact = (touch[jj] == 0);
+      if (newcontact) {
         const bool owns_contact =
           force->newton_pair || j < nlocal || tag[i] < tag[j];
         if (owns_contact) events_new_local_step++;
       }
       touch[jj] = 1;
-      shear = &allshear[3 * jj];
 
       if (shearupdate) {
         shear[0] += vtr1 * dt;
@@ -641,8 +605,19 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
         torque[j][2] += tauj[2];
       }
 
+      if (diag) {
+        const double F[3] = {fx, fy, fz};
+        const double delta = radsum - r;
+        diag_contact(i, j, nlocal, newcontact, hist, del, r, radsum, rhoi, rhoj, ui, uj, F,
+                     kn * delta, 0.5 * kn * delta * delta);
+      }
+
+      // Virial with the centre-of-mass branch vector x_i - x_j (NOT the
+      // contact-point separation del): the shear work and the momentum flux
+      // across a plane are carried between particle centres.
       if (evflag)
-        ev_tally_xyz(i, j, nlocal, force->newton_pair, 0.0, 0.0, fx, fy, fz, delx, dely, delz);
+        ev_tally_xyz(i, j, nlocal, force->newton_pair, 0.0, 0.0, fx, fy, fz,
+                     x[i][0] - x[j][0], x[i][1] - x[j][1], x[i][2] - x[j][2]);
     }
   }
 
@@ -650,6 +625,296 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
   maybe_log_collision_events();
 
   if (vflag_fdotr) virial_fdotr_compute();
+}
+
+/* ----------------------------------------------------------------------
+   angular velocity (space frame) and rotational kinetic energy of atom i
+------------------------------------------------------------------------- */
+
+void PairGranSpherocylHistory::omega_erot(int i, double *omega, double &erot)
+{
+  auto *avec = dynamic_cast<AtomVecEllipsoid *>(atom->avec);
+  const int itype = atom->type[i];
+  const double mass = atom->rmass_flag ? atom->rmass[i] : atom->mass[itype];
+  double inertia[3];
+  spherocyl_inertia(mass, R[itype], H[itype], inertia);
+  MathExtra::mq_to_omega(atom->angmom[i], avec->bonus[atom->ellipsoid[i]].quat, inertia, omega);
+  const double *L = atom->angmom[i];
+  erot = 0.5 * (L[0] * omega[0] + L[1] * omega[1] + L[2] * omega[2]);
+}
+
+/* ----------------------------------------------------------------------
+   fix spherocyl/diag: per-step bookkeeping of a touching pair
+   Ownership (one rank books each pair): newton on, or j local, or
+   tag[i] < tag[j] for local-ghost pairs (these appear on two ranks).
+------------------------------------------------------------------------- */
+
+void PairGranSpherocylHistory::diag_contact(int i, int j, int nlocal, int newcontact,
+                                            double *hist, const double *del, double r,
+                                            double radsum, const double *rhoi,
+                                            const double *rhoj, const double *ui,
+                                            const double *uj, const double *F, double fel,
+                                            double uel)
+{
+  FixSpherocylDiag *dg = diag;
+  double *h = hist + NSHEAR;
+  tagint *tag = atom->tag;
+  double **x = atom->x;
+  double **v = atom->v;
+  double **pa = dg->pa;
+  const bool owner = force->newton_pair || j < nlocal || tag[i] < tag[j];
+  const bool active = !update->setupflag;
+  const double dt = update->dt;
+  const double tnow = update->atime + (update->ntimestep - update->atimestep) * dt;
+
+  const double rinv = 1.0 / (r + 1e-300);
+  const double nhat[3] = {del[0] * rinv, del[1] * rinv, del[2] * rinv};
+
+  double wi[3], wj[3], eroti, erotj;
+  omega_erot(i, wi, eroti);
+  omega_erot(j, wj, erotj);
+  const double vc[3] = {
+      v[i][0] + wi[1] * rhoi[2] - wi[2] * rhoi[1] - (v[j][0] + wj[1] * rhoj[2] - wj[2] * rhoj[1]),
+      v[i][1] + wi[2] * rhoi[0] - wi[0] * rhoi[2] - (v[j][1] + wj[2] * rhoj[0] - wj[0] * rhoj[2]),
+      v[i][2] + wi[0] * rhoi[1] - wi[1] * rhoi[0] - (v[j][2] + wj[0] * rhoj[1] - wj[1] * rhoj[0])};
+
+  // coordination: current-step counts for local atoms, previous-step counts
+  // (forward communicated) for the "other contacts" test
+  pa[i][FixSpherocylDiag::PA_ZCUR] += 1.0;
+  if (j < nlocal) pa[j][FixSpherocylDiag::PA_ZCUR] += 1.0;
+  double zo = MAX(pa[i][FixSpherocylDiag::PA_ZPREV], pa[j][FixSpherocylDiag::PA_ZPREV]) -
+      (newcontact ? 0.0 : 1.0);
+  if (zo < 0.0) zo = 0.0;
+
+  if (newcontact || h[D_MARK] == 0.0) {
+    for (int k = 0; k < NDIAG; k++) h[k] = 0.0;
+    h[D_MARK] = 1.0;
+    // a contact whose history was lost (e.g. pair re-created mid contact) is
+    // tracked but not reported as a collision
+    h[D_T0] = newcontact ? tnow : -1.0e300;
+    for (int k = 0; k < 3; k++) {
+      h[D_G0 + k] = v[i][k] - v[j][k];
+      h[D_N0 + k] = nhat[k];
+    }
+    h[D_GC0] = vc[0] * nhat[0] + vc[1] * nhat[1] + vc[2] * nhat[2];
+    for (int k = 0; k < 3; k++) h[D_VC0 + k] = vc[k];
+    h[D_EROT0] = eroti + erotj;
+    const int itype = atom->type[i], jtype = atom->type[j];
+    const double li = H[itype] > 0.0 ? sqrt(rhoi[0]*rhoi[0] + rhoi[1]*rhoi[1] + rhoi[2]*rhoi[2]) / H[itype] : 0.0;
+    const double lj = H[jtype] > 0.0 ? sqrt(rhoj[0]*rhoj[0] + rhoj[1]*rhoj[1] + rhoj[2]*rhoj[2]) / H[jtype] : 0.0;
+    h[D_LMIN] = MIN(li, lj);
+    h[D_LMAX] = MAX(li, lj);
+    h[D_UU] = fabs(ui[0] * uj[0] + ui[1] * uj[1] + ui[2] * uj[2]);
+    h[D_SAME] = (pa[i][FixSpherocylDiag::PA_LASTP] == (double) tag[j]) ? 1.0 : 0.0;
+    if (newcontact) {
+      dg->contact_start_atoms(i, j, nlocal, tnow);
+      if (owner) dg->acc[FixSpherocylDiag::A_NSTART] += 1.0;
+    }
+  }
+
+  const double s = h[D_MARK];    // true symmetric value = stored * s
+  const double dd = (radsum - r) / radsum;
+  if (dd > s * h[D_DMAX]) h[D_DMAX] = s * dd;
+  if (zo > s * h[D_ZOTH]) h[D_ZOTH] = s * zo;
+  if (owner) dg->uel_step += uel;
+
+  if (!active) return;
+
+  const double rij[3] = {x[i][0] - x[j][0], x[i][1] - x[j][1], x[i][2] - x[j][2]};
+  const double Fnc[3] = {F[0] - fel * nhat[0], F[1] - fel * nhat[1], F[2] - fel * nhat[2]};
+  // per-contact non-elastic work (half-step velocities; O(dt) accurate, used
+  // only for the per-collision record and the energy-gain indicator)
+  const double pnc = (Fnc[0] * vc[0] + Fnc[1] * vc[1] + Fnc[2] * vc[2]) * dt;
+
+  // per-atom non-elastic force and torque for the exact energy bookkeeping
+  // (power taken at end_of_step with full-step peculiar velocities)
+  {
+    double *fi = &pa[i][FixSpherocylDiag::PA_FNC], *ti = &pa[i][FixSpherocylDiag::PA_TNC];
+    fi[0] += Fnc[0];
+    fi[1] += Fnc[1];
+    fi[2] += Fnc[2];
+    ti[0] += rhoi[1] * Fnc[2] - rhoi[2] * Fnc[1];
+    ti[1] += rhoi[2] * Fnc[0] - rhoi[0] * Fnc[2];
+    ti[2] += rhoi[0] * Fnc[1] - rhoi[1] * Fnc[0];
+    if (j < nlocal) {
+      double *fj = &pa[j][FixSpherocylDiag::PA_FNC], *tj = &pa[j][FixSpherocylDiag::PA_TNC];
+      fj[0] -= Fnc[0];
+      fj[1] -= Fnc[1];
+      fj[2] -= Fnc[2];
+      tj[0] -= rhoj[1] * Fnc[2] - rhoj[2] * Fnc[1];
+      tj[1] -= rhoj[2] * Fnc[0] - rhoj[0] * Fnc[2];
+      tj[2] -= rhoj[0] * Fnc[1] - rhoj[1] * Fnc[0];
+    }
+  }
+  h[D_WNC] += s * pnc;
+  if (pnc > 0.0) h[D_WPOS] += s * pnc;
+  for (int a = 0; a < 3; a++) {
+    h[D_J + a] += F[a] * dt;
+    for (int b = 0; b < 3; b++) h[D_RF + 3 * a + b] += s * rij[a] * F[b] * dt;
+  }
+
+  if (owner) {
+    double *acc = dg->acc;
+    const double *G = dg->G;    // Voigt: xx yy zz yz xz xy
+    for (int a = 0; a < 3; a++)
+      for (int b = 0; b < 3; b++) acc[FixSpherocylDiag::A_C + 3 * a + b] += rij[a] * F[b] * dt;
+    // collisional shear work: -sum_ab G_ab F_a r_b
+    acc[FixSpherocylDiag::A_WSHC] -=
+        (G[0] * F[0] * rij[0] + G[1] * F[1] * rij[1] + G[2] * F[2] * rij[2] +
+         G[5] * F[0] * rij[1] + G[4] * F[0] * rij[2] + G[3] * F[1] * rij[2]) * dt;
+    // streaming part of the non-elastic work: F_nc . (G r_ij)
+    acc[FixSpherocylDiag::A_WNCG] +=
+        (Fnc[0] * (G[0] * rij[0] + G[5] * rij[1] + G[4] * rij[2]) +
+         Fnc[1] * (G[1] * rij[1] + G[3] * rij[2]) + Fnc[2] * G[2] * rij[2]) * dt;
+    if (pnc > 0.0) acc[FixSpherocylDiag::A_WPOS] += pnc;
+  }
+}
+
+/* ----------------------------------------------------------------------
+   fix spherocyl/diag: a touching pair has just separated -> close record
+   (velocities in the force stage are half-step velocities; at separation
+   they already contain the full impulse of the collision)
+------------------------------------------------------------------------- */
+
+void PairGranSpherocylHistory::diag_release(int i, int j, int nlocal, double *hist,
+                                            const double *rhoi, const double *rhoj)
+{
+  FixSpherocylDiag *dg = diag;
+  double *h = hist + NSHEAR;
+  const double s = h[D_MARK];
+  if (s == 0.0) return;
+
+  tagint *tag = atom->tag;
+  double **v = atom->v;
+  const double dt = update->dt;
+  const double tnow = update->atime + (update->ntimestep - update->atimestep) * dt;
+
+  dg->contact_end_atoms(i, j, nlocal, tnow);
+
+  const bool owner = force->newton_pair || j < nlocal || tag[i] < tag[j];
+  if (!owner) return;
+  const double t0 = s * h[D_T0];
+  if (t0 < -1.0e299) return;
+
+  double wi[3], wj[3], eroti, erotj;
+  omega_erot(i, wi, eroti);
+  omega_erot(j, wj, erotj);
+  const double g1[3] = {v[i][0] - v[j][0], v[i][1] - v[j][1], v[i][2] - v[j][2]};
+  const double vc1[3] = {
+      g1[0] + wi[1] * rhoi[2] - wi[2] * rhoi[1] - (wj[1] * rhoj[2] - wj[2] * rhoj[1]),
+      g1[1] + wi[2] * rhoi[0] - wi[0] * rhoi[2] - (wj[2] * rhoj[0] - wj[0] * rhoj[2]),
+      g1[2] + wi[0] * rhoi[1] - wi[1] * rhoi[0] - (wj[0] * rhoj[1] - wj[1] * rhoj[0])};
+
+  const double *g0 = &h[D_G0];
+  const double *n0 = &h[D_N0];
+  const double *vc0 = &h[D_VC0];
+  // Restitution axis = impulse direction J/|J|.  The relative-velocity change
+  // of the collision is exactly parallel to J, so e = -g_post.J/g_pre.J is the
+  // restitution of the equivalent instantaneous collision (the DSMC rule).
+  // Projecting on the initial normal n0 instead is biased low for oblique and
+  // grazing soft contacts, whose normal rotates during the contact.
+  double jhat[3] = {h[D_J], h[D_J + 1], h[D_J + 2]};
+  const double jmag = sqrt(jhat[0] * jhat[0] + jhat[1] * jhat[1] + jhat[2] * jhat[2]);
+  for (int k = 0; k < 3; k++) jhat[k] = jmag > 0.0 ? jhat[k] / jmag : n0[k];
+  const double gn_pre = g0[0] * jhat[0] + g0[1] * jhat[1] + g0[2] * jhat[2];
+  const double gn_post = g1[0] * jhat[0] + g1[1] * jhat[1] + g1[2] * jhat[2];
+  const double gc_pre = vc0[0] * jhat[0] + vc0[1] * jhat[1] + vc0[2] * jhat[2];
+  const double gc_post = vc1[0] * jhat[0] + vc1[1] * jhat[1] + vc1[2] * jhat[2];
+  const double gt_pre = sqrt(MAX(0.0, g0[0]*g0[0] + g0[1]*g0[1] + g0[2]*g0[2] - gn_pre*gn_pre));
+
+  const int itype = atom->type[i], jtype = atom->type[j];
+  const double mi = atom->rmass_flag ? atom->rmass[i] : atom->mass[itype];
+  const double mj = atom->rmass_flag ? atom->rmass[j] : atom->mass[jtype];
+  const double mu = mi * mj / (mi + mj);
+  const double erel0 = 0.5 * mu * (g0[0]*g0[0] + g0[1]*g0[1] + g0[2]*g0[2]);
+  const double erel1 = 0.5 * mu * (g1[0]*g1[0] + g1[1]*g1[1] + g1[2]*g1[2]);
+  const double erot0 = s * h[D_EROT0];
+  const double erot1 = eroti + erotj;
+  const double epre = erel0 + erot0;
+  const double dE = (erel1 + erot1) - epre;
+  const double dur_t = tnow - t0;
+  const double dur = dur_t / dt;
+  const double dmax = s * h[D_DMAX];
+  const double zo = s * h[D_ZOTH];
+  const double lmin = s * h[D_LMIN], lmax = s * h[D_LMAX];
+  const double uu = s * h[D_UU], same = s * h[D_SAME];
+
+  double *acc = dg->acc;
+  double *accmin = dg->accmin;
+  using FD = FixSpherocylDiag;
+  acc[FD::A_NEND] += 1.0;
+  const bool binary = (zo < 0.5);
+  if (binary) {
+    acc[FD::A_NBIN] += 1.0;
+    if (gn_pre < 0.0) {
+      acc[FD::A_ETR] += gn_post;
+      acc[FD::A_ETR2] += gn_pre;
+      acc[FD::A_NETR] += 1.0;
+      const double e = -gn_post / gn_pre;
+      if (e < 0.0 || e > 1.0) acc[FD::A_ETROUT] += 1.0;
+    }
+    if (gc_pre < 0.0) {
+      acc[FD::A_EC] += gc_post;
+      acc[FD::A_EC2] += gc_pre;
+      acc[FD::A_NEC] += 1.0;
+      const double e = -gc_post / gc_pre;
+      if (e < 0.0 || e > 1.0) acc[FD::A_ECOUT] += 1.0;
+    }
+  } else
+    acc[FD::A_NMULTI] += 1.0;
+  acc[FD::A_GN] += fabs(gn_pre);
+  acc[FD::A_GN2] += gn_pre * gn_pre;
+  acc[FD::A_DUR] += dur;
+  acc[FD::A_DURT] += dur_t;
+  dg->add_duration(dur);
+  if (dur < dg->dur_min_thresh) acc[FD::A_NSHORT] += 1.0;
+  if (dur > dg->dur_long_thresh) acc[FD::A_NLONG] += 1.0;
+  accmin[FD::M_DURMIN] = MIN(accmin[FD::M_DURMIN], dur);
+  accmin[FD::M_NEGDURMAX] = MIN(accmin[FD::M_NEGDURMAX], -dur);
+  acc[FD::A_DMAX] += dmax;
+  accmin[FD::M_NEGDMAXMAX] = MIN(accmin[FD::M_NEGDMAXMAX], -dmax);
+  if (epre > 0.0) {
+    if (dE > 1.0e-3 * epre) acc[FD::A_NANTI] += 1.0;
+    acc[FD::A_DEFRAC] += dE / epre;
+  }
+  acc[FD::A_DETR] += erel1 - erel0;
+  acc[FD::A_DEROT] += erot1 - erot0;
+  acc[FD::A_NSAME] += same;
+  if (lmax > 0.999) acc[FD::A_NTIP] += 1.0;
+  acc[FD::A_UU] += uu;
+  acc[FD::A_NN + 0] += n0[0] * n0[0];
+  acc[FD::A_NN + 1] += n0[1] * n0[1];
+  acc[FD::A_NN + 2] += n0[2] * n0[2];
+  acc[FD::A_NN + 3] += n0[0] * n0[1];
+  acc[FD::A_NN + 4] += n0[0] * n0[2];
+  acc[FD::A_NN + 5] += n0[1] * n0[2];
+  for (int k = 0; k < 9; k++) acc[FD::A_CE + k] += s * h[D_RF + k];
+
+  if (dg->sample_pair(tag[i], tag[j])) {
+    double rec[FD::NEV] = {tnow,
+                           (double) tag[i],
+                           (double) tag[j],
+                           dur,
+                           gn_pre,
+                           gn_post,
+                           gn_pre < 0.0 ? -gn_post / gn_pre : 0.0,
+                           gc_pre,
+                           gc_post,
+                           gc_pre < 0.0 ? -gc_post / gc_pre : 0.0,
+                           gt_pre,
+                           erel0,
+                           erel1,
+                           erot0,
+                           erot1,
+                           s * h[D_WNC],
+                           dmax,
+                           lmin,
+                           lmax,
+                           uu,
+                           zo,
+                           same};
+    dg->push_event(rec);
+  }
 }
 
 void PairGranSpherocylHistory::maybe_log_collision_events()

@@ -1,0 +1,26 @@
+# T8 decomposition invariance: identical physics on 1 and 4 ranks
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data rods_ar2_T1.data
+set type 1 mass 1.000000357564170
+change_box all triclinic
+variable meff equal 0.5
+variable gref equal 2.26
+variable kn equal 5.0*v_meff*v_gref^2/(4.0*0.004^2.5)
+variable lne equal abs(ln(0.7))
+variable eta equal sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne)
+pair_style gran/spherocyl/mfix/history ${kn} 0 ${eta} 0 0 1
+pair_coeff * * 0.5 0.5
+neighbor 0.5 bin
+neigh_modify delay 0 every 1 check yes one 200 page 20000
+fix int all nve/spherocyl
+timestep $(2.94*0.004/v_gref/40.0)
+run 0
+velocity all ramp vx 0.0 $(0.3*ly) y $(ylo) $(yhi) sum yes
+fix shear all deform 1 xy erate 0.3 remap v units box
+fix diag all spherocyl/diag 25000 t8_np${np} sample 2500
+run 150000

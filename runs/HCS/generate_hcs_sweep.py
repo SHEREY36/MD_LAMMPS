@@ -50,7 +50,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Generate HCS Mode-B restitution sweep folders.")
     parser.add_argument("--template", type=Path, default=script_dir / "hcs_spherocyl.in")
-    parser.add_argument("--output-dir", type=Path, default=script_dir / "modeB_e_sweep")
+    parser.add_argument("--output-dir", type=Path, default=script_dir / "modeB_e_sweep2")
     parser.add_argument("--cases-file", type=Path, default=script_dir / "hcs_modeB_cases.txt")
     parser.add_argument("--input-name", default="in.hcs")
     parser.add_argument("--mode", choices=("A", "B"), default="B")

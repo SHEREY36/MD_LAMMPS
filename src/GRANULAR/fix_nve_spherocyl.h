@@ -29,8 +29,6 @@ class FixNVESpherocyl : public FixNVE {
   class PairGranSpherocylHistory *pair_sc;
   double *R;
   double *H;
-  int use_rot_sllod;
-  double half_gdot_rot_sllod;
 };
 
 }    // namespace LAMMPS_NS

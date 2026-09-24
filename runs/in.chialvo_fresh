@@ -1,0 +1,124 @@
+# ------------------------------------------------------------
+# FRESH RUN: build IC + relax + equil + shear transient
+# Writes restart_last.shear for tuning loop
+# ------------------------------------------------------------
+
+units          lj
+dimension      3
+atom_style     sphere
+boundary       p p p
+newton         off
+comm_modify    vel yes
+
+# -------------------------
+# User parameters
+# -------------------------
+variable        N      equal 2000
+variable        phi    equal 0.01
+variable        d      equal 1.0
+variable        rho_p  equal 1.0
+variable        e      equal 1.0
+variable        mu     equal 0.0
+
+variable        gdot   equal 5.0e-5
+variable        T0     equal 1.0e-3
+variable        seed   equal 12345
+
+variable        kn     equal 1.0e4
+variable        kt     equal (2.0/7.0)*${kn}
+variable        gammat equal 0.0
+variable        dampflag equal 1
+
+timestep        5.0e-5
+
+# -------------------------
+# Geometry from phi
+# -------------------------
+variable        Vp    equal PI/6.0*${d}^3
+variable        Vbox  equal ${N}*${Vp}/${phi}
+variable        L     equal ${Vbox}^(1.0/3.0)
+
+print "MODE=fresh: building new IC"
+print "Computed box length L = ${L}"
+
+region          box block 0 ${L} 0 ${L} 0 ${L} units box
+create_box      1 box
+change_box      all triclinic
+
+create_atoms    1 random ${N} ${seed} box overlap ${d} maxtry 50
+set             type 1 diameter ${d} density ${rho_p}
+
+# -------------------------
+# Granular damping from restitution
+# (safe for e=1.0)
+# -------------------------
+variable        m      equal ${rho_p}*${Vp}
+variable        meff   equal ${m}/2.0
+variable        eta    equal sqrt((log(${e})*log(${e})) / (PI*PI + log(${e})*log(${e}) + 1.0e-30))
+variable        gamman equal 2.0*${eta}*sqrt(${kn}*${meff})
+
+pair_style      gran/hooke/history ${kn} ${kt} ${gamman} ${gammat} ${mu} ${dampflag}
+pair_coeff      * *
+
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+# -------------------------
+# Stage A: relax overlaps
+# -------------------------
+fix             relax all nve/limit 0.05
+run             2000
+unfix           relax
+
+# -------------------------
+# Stage B: equil (no shear)
+# -------------------------
+fix             int all nve/sphere
+velocity        all create ${T0} ${seed} mom yes rot yes dist gaussian
+run             20000
+
+# -------------------------
+# Stage C: shear transient
+# -------------------------
+reset_timestep  0
+fix             shear all deform 1 xy erate ${gdot} remap v units box
+
+compute         Tdef all temp/deform
+thermo_modify   temp Tdef
+compute         P all pressure Tdef
+
+# number density
+variable        vol equal vol
+variable        n   equal ${N}/v_vol
+variable        mpart equal ${rho_p}*(PI/6.0)*${d}^3
+
+# a* proxy (consistent tuning metric)
+variable        Cnu equal 1.0
+variable        nu0 equal v_Cnu*v_n*${d}*${d}*sqrt(c_Tdef/v_mpart)
+variable        aStar equal ${gdot}/v_nu0
+
+# reduced stresses (NO chi)
+variable        pxx equal c_P[1]
+variable        pyy equal c_P[2]
+variable        pzz equal c_P[3]
+variable        pxy equal c_P[4]
+variable        Pxxs equal v_pxx/(v_n*c_Tdef)
+variable        Pyys equal v_pyy/(v_n*c_Tdef)
+variable        Pzzs equal v_pzz/(v_n*c_Tdef)
+variable        Pxys equal v_pxy/(v_n*c_Tdef)
+
+variable        xytilt equal xy
+variable        gamma  equal v_xytilt/ly
+
+thermo          2000
+thermo_style    custom step time temp xy v_gamma v_aStar v_Pxxs v_Pyys v_Pzzs v_Pxys
+
+fix             av all ave/time 200 50 10000 v_aStar v_Pxxs v_Pyys v_Pzzs v_Pxys v_gamma file shear_stats.dat
+
+dump            dmp all custom 100000 dump.lammpstrj id type x y z vx vy vz radius
+dump_modify     dmp sort id
+
+run             1000000
+
+write_restart   restart_last.shear
+

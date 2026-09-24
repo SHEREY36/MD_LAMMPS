@@ -1,0 +1,176 @@
+# ======================================================================
+# 3D uniform shear flow of smooth, inelastic spherocylinders (dilute DEM)
+#
+# Physics (see runs/fresh_usf/README.md):
+#   * Lees-Edwards via fix deform xy erate + remap v, plain Newton-Euler
+#     integration (fix nve/spherocyl).  NO SLLOD force, NO rotational SLLOD:
+#     with remap v the stored velocities are lab velocities and dv/dt = F/m.
+#   * Hertz normal law  F = kn d^1.5 + eta d^0.25 v_n  with the damping
+#     calibrated for the restitution alpha:
+#         eta = sqrt(5) sqrt(kn m*) |ln a| / sqrt(pi^2 + ln^2 a)
+#   * Hard-particle limit enforced at the actual steady temperature: kn and
+#     dt are recalibrated twice during the transient from the measured mean
+#     overlap and contact duration (targets: delta_target, Nc_target).
+#   * Collisional stress uses the centre-of-mass branch vector.
+#
+# Stages: A elastic equilibration (no shear; built-in energy-conservation
+#         check) -> B shear transient 1 -> recalibrate -> C transient 2 ->
+#         recalibrate -> D transient 3 -> E production (nblocks explicit
+#         blocks, restart after each).
+#
+# All case parameters come from params.in (written by generate_fresh_usf.py).
+# Run with:  mpirun -np 4 lmp_mpi -in in.usf       (-in, not <)
+# ======================================================================
+
+units           lj
+dimension       3
+atom_style      ellipsoid
+atom_modify     map array
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+include         params.in
+
+# ---------------------------------------------------------------- geometry
+variable        R      equal 0.5*${d}
+variable        Lcyl   equal (${AR}-1.0)*${d}
+variable        H      equal 0.5*${Lcyl}
+variable        Vp     equal (4.0/3.0)*PI*${R}^3+PI*${R}^2*${Lcyl}
+variable        m      equal ${rho_p}*${Vp}
+variable        meff   equal 0.5*${m}
+variable        Iperp  equal (PI/48.0)*${rho_p}*${d}^2*${Lcyl}^3+(PI/24.0)*${rho_p}*${d}^3*${Lcyl}^2+(3.0*PI/64.0)*${rho_p}*${d}^4*${Lcyl}+(PI/60.0)*${rho_p}*${d}^5
+variable        lne    equal abs(ln(${alpha}))
+
+# -------------------------------------------------- initial stiffness / dt
+# Hertz head-on: delta_max = (5 m* g^2/(4 kn))^(2/5), t_c = 2.94 delta_max/g.
+# g_ref = 2.26 sqrt(T/m) = collision-weighted mean normal speed (Maxwellian).
+variable        gref   equal 2.26*sqrt(${T_guess}/${m})
+variable        kn     equal 5.0*${meff}*${gref}^2/(4.0*(${delta_target}*${d})^2.5)
+variable        tcref  equal 2.94*${delta_target}*${d}/${gref}
+variable        dtrun  equal ${tcref}/${Nc_target}
+variable        eta    equal sqrt(5.0)*sqrt(${kn}*${meff})*${lne}/sqrt(PI*PI+${lne}*${lne})
+
+print "================================================================"
+print "FRESH USF  AR=${AR}  alpha=${alpha}  phi=${phi}  gdot=${gdot}"
+print "R=${R} H=${H} m=${m} Iperp=${Iperp}"
+print "T_guess=${T_guess}  kn0=${kn}  eta0=${eta}  dt0=${dtrun}"
+print "================================================================"
+
+# ------------------------------------------------------------------ state
+read_data       ${datafile}
+set             type 1 mass ${m}
+change_box      all triclinic
+variable        N  equal count(all)
+variable        n  equal v_N/vol
+
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 0.0 0.0 0.0 1
+pair_coeff      * * ${R} ${H}
+neighbor        ${skin} bin
+neigh_modify    delay 0 every 1 check yes one 200 page 20000
+fix             int all nve/spherocyl
+timestep        ${dtrun}
+
+compute         Tdef all temp/deform
+compute         q    all property/atom quatw quati quatj quatk
+compute         am   all property/atom angmomx angmomy angmomz
+
+# helper: steps per diag window for the current dt
+variable        nwin equal round(${strain_window}/(${gdot}*${dtrun}))
+
+# ========================================== A: elastic equilibration, no shear
+# (energy must be conserved: diag_equil.energy resid ~ 0, W terms = 0)
+variable        tA      equal ${equil_collisions}/${nu_guess}
+variable        nwinA   equal round(v_tA/(20.0*${dtrun}))
+variable        stepsA  equal 20*${nwinA}
+fix             diag all spherocyl/diag ${nwinA} diag_equil sample $(round(v_nwinA/10)+1)
+thermo          ${nwinA}
+thermo_style    custom step time c_Tdef f_diag[1] f_diag[2] f_diag[3] f_diag[10] f_diag[4] f_diag[5] f_diag[6]
+print           "STAGE A: elastic equilibration ${stepsA} steps (${equil_collisions} collisions/particle)"
+run             ${stepsA}
+unfix           diag
+thermo_style    custom step time c_Tdef
+
+# =============================================================== B: shear on
+velocity        all ramp vx 0.0 $(v_gdot*ly) y $(ylo) $(yhi) sum yes
+fix             shear all deform 1 xy erate ${gdot} remap v units box
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1
+
+variable        nwin equal round(${strain_window}/(${gdot}*${dtrun}))
+fix             diag all spherocyl/diag ${nwin} diag_tr1 sample $(round(v_nwin/10)+1)
+thermo          ${nwin}
+thermo_style    custom step time f_diag[19] c_Tdef f_diag[2] f_diag[3] f_diag[15] f_diag[16] f_diag[17] f_diag[18] f_diag[10] f_diag[11] f_diag[4] f_diag[5] f_diag[6]
+print           "STAGE B: shear transient 1, ${strain_tr1} strain"
+run             $(v_nwin*round(v_strain_tr1/v_strain_window))
+
+# ---- recalibration 1: hold mean overlap at delta_target and Nc_target steps per contact
+include         recalibrate.in
+unfix           diag
+thermo_style    custom step time c_Tdef
+
+# ============================================================ C: transient 2
+fix             diag all spherocyl/diag ${nwin} diag_tr2 sample $(round(v_nwin/10)+1)
+thermo          ${nwin}
+thermo_style    custom step time f_diag[19] c_Tdef f_diag[2] f_diag[3] f_diag[15] f_diag[16] f_diag[17] f_diag[18] f_diag[10] f_diag[11] f_diag[4] f_diag[5] f_diag[6]
+print           "STAGE C: shear transient 2, ${strain_tr2} strain (kn=${kn}, dt=${dtrun})"
+run             $(v_nwin*round(v_strain_tr2/v_strain_window))
+include         recalibrate.in
+unfix           diag
+thermo_style    custom step time c_Tdef
+
+# ============================================================ D: transient 3
+fix             diag all spherocyl/diag ${nwin} diag_tr3 sample $(round(v_nwin/10)+1)
+thermo          ${nwin}
+thermo_style    custom step time f_diag[19] c_Tdef f_diag[2] f_diag[3] f_diag[15] f_diag[16] f_diag[17] f_diag[18] f_diag[10] f_diag[11] f_diag[4] f_diag[5] f_diag[6]
+print           "STAGE D: shear transient 3, ${strain_tr3} strain at fixed kn=${kn}, dt=${dtrun}"
+run             $(v_nwin*round(v_strain_tr3/v_strain_window))
+write_restart   restart_before_production.bin
+unfix           diag
+thermo_style    custom step time c_Tdef
+
+# ============================================================ E: production
+variable        steps_block equal $(v_nwin*round(v_strain_block/v_strain_window))
+# profile/rdf/dump cadence: Nfreq must be an exact multiple of Nevery
+variable        nprof_every equal $(round(v_nwin/5)+1)
+variable        nprof       equal $(50*v_nprof_every)
+variable        nrdf_every  equal $(5*v_nprof_every)
+
+fix             diag all spherocyl/diag ${nwin} prod sample $(round(v_nwin/10)+1) log_fraction ${log_fraction}
+
+# --- profiles along the gradient (y) and vorticity (z) directions
+#     peculiar velocity c = v - gdot*(y-ylo); rotational energy |L|^2/(2 Iperp)
+variable        cx   atom vx-${gdot}*(y-ylo)
+variable        kxx  atom mass*v_cx*v_cx
+variable        kyy  atom mass*vy*vy
+variable        kzz  atom mass*vz*vz
+variable        kxy  atom mass*v_cx*vy
+variable        erot atom (c_am[1]^2+c_am[2]^2+c_am[3]^2)/(2.0*${Iperp})
+variable        ux   atom 2.0*(c_q[2]*c_q[4]+c_q[1]*c_q[3])
+variable        uy   atom 2.0*(c_q[3]*c_q[4]-c_q[1]*c_q[2])
+variable        uz   atom 1.0-2.0*(c_q[2]*c_q[2]+c_q[3]*c_q[3])
+variable        uxx  atom v_ux*v_ux
+variable        uyy  atom v_uy*v_uy
+variable        uzz  atom v_uz*v_uz
+variable        uxy  atom v_ux*v_uy
+compute         cy all chunk/atom bin/1d y lower 0.0625 units reduced
+compute         cz all chunk/atom bin/1d z lower 0.0625 units reduced
+fix             profy all ave/chunk ${nprof_every} 50 ${nprof} cy density/number vx vy vz v_cx v_kxx v_kyy v_kzz v_kxy v_erot v_uxx v_uyy v_uzz v_uxy file prof_y.dat
+fix             profz all ave/chunk ${nprof_every} 50 ${nprof} cz density/number v_cx vy vz v_kxx v_kyy v_kzz v_kxy v_erot file prof_z.dat
+
+# --- centre-centre radial distribution (contact enhancement = clustering)
+compute         rdf all rdf 60
+fix             rdf all ave/time ${nrdf_every} 10 ${nprof} c_rdf[*] file rdf.dat mode vector
+
+# --- snapshots for any post-hoc analysis (about every 10 windows = 5 strain)
+dump            snap all custom ${nprof} snapshots.lammpstrj.gz id x y z vx vy vz c_q[1] c_q[2] c_q[3] c_q[4] c_am[1] c_am[2] c_am[3] f_diag[1] f_diag[6]
+dump_modify     snap sort id
+
+thermo          ${nwin}
+thermo_style    custom step time f_diag[19] c_Tdef f_diag[2] f_diag[3] f_diag[15] f_diag[16] f_diag[17] f_diag[18] f_diag[10] f_diag[11] f_diag[4] f_diag[5] f_diag[6]
+
+print           "STAGE E: production ${nblocks} blocks x ${strain_block} strain, ${steps_block} steps/block, kn=${kn}, dt=${dtrun}"
+include         production_blocks.in
+
+print "================================================================"
+print "DONE  AR=${AR} alpha=${alpha}: production files prod.* prof_y.dat prof_z.dat rdf.dat snapshots.lammpstrj.gz"
+print "================================================================"

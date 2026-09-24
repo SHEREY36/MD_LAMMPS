@@ -1,0 +1,22 @@
+# T2 single static contact: rod 1 at origin along x, rod 2 at (0.3,0.9,0) along z.
+# Closest centreline points (0.3,0,0),(0.3,0.9,0): overlap 0.1, force on rod 1 = -kn*0.1^1.5 in y.
+# Correct virial (COM branch): P_xy = (x1-x2)*F_y/V = (-0.3)(-31.6228)/8000 = 1.18585e-3,
+#                              P_yy = (-0.9)(-31.6228)/8000 = 3.55756e-3 ; P_yx = 0.
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data data.two_rods
+set type 1 mass 1.0
+pair_style gran/spherocyl/mfix/history 1000.0 0 0 0 0 1
+pair_coeff * * 0.5 0.5
+fix int all nve/spherocyl
+timestep 1.0e-12
+compute P all pressure NULL virial
+fix diag all spherocyl/diag 1 t2
+thermo_style custom step c_P[1] c_P[2] c_P[3] c_P[4] c_P[5] c_P[6]
+thermo_modify format float %.10g
+run 1
+print "T2 LAMMPS virial: Pxy=$(c_P[4]:%.10g) Pyy=$(c_P[2]:%.10g)"

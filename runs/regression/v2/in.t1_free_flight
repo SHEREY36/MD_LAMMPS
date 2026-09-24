@@ -1,0 +1,31 @@
+# T1 collisionless free flight of AR=2 rods under Lees-Edwards shear (all pairs excluded).
+# Exact Newton: P_xy/nT0 = -gdot t, (P_xx-P_yy)/nT0 = (gdot t)^2, every angular momentum constant.
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data rods_ar2_T1.data
+set type 1 mass 1.000000357564170
+change_box all triclinic
+pair_style gran/spherocyl/mfix/history 1.0e6 0 0 0 0 1
+pair_coeff * * 0.5 0.5
+neighbor 0.5 nsq
+neigh_modify exclude type 1 1
+fix int all nve/spherocyl
+timestep 1.0e-4
+run 0
+velocity all ramp vx 0.0 $(1.8*ly) y $(ylo) $(yhi) sum yes
+fix shear all deform 1 xy erate 1.8 remap v units box
+compute Tdef all temp/deform
+compute Pk all pressure Tdef ke
+compute am all property/atom angmomx angmomy angmomz
+run 0
+fix L0 all store/state 0 c_am[1] c_am[2] c_am[3]
+variable LL0 atom c_am[1]*f_L0[1]+c_am[2]*f_L0[2]+c_am[3]*f_L0[3]
+variable L0sq atom f_L0[1]^2+f_L0[2]^2+f_L0[3]^2
+compute sL all reduce sum v_LL0 v_L0sq
+fix diag all spherocyl/diag 1000 t1
+fix out all print 500 "$(step*dt*1.8:%.6f) $(c_Pk[4]:%.10g) $(c_Pk[1]:%.10g) $(c_Pk[2]:%.10g) $(c_sL[1]/c_sL[2]:%.12f)" file t1_series.dat screen no title "# strain Pk_xy Pk_xx Pk_yy corr(L,L0)"
+run 5000

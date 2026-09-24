@@ -1,0 +1,11 @@
+# ----------------------------------------------------------------------
+# Hard-particle recalibration from the diag statistics of the last run:
+#   f_diag[4]  = mean max overlap / (Ri+Rj) over completed collisions
+#   f_diag[21] = mean contact duration (time units)
+#   f_diag[20] = number of completed collisions
+# Hertz at fixed impact speed: delta ~ kn^(-2/5), t_c ~ delta.
+# ----------------------------------------------------------------------
+if "$(f_diag[20]) < 200" then &
+  "print 'RECALIBRATE: only $(f_diag[20]) collisions, keeping kn=${kn} dt=${dtrun}'" &
+else &
+  "include recalibrate_apply.in"

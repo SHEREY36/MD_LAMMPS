@@ -15,6 +15,8 @@
 #include "pair_gran_spherocyl_history.h"
 #include "utils.h"
 
+#include <cstring>
+
 using namespace LAMMPS_NS;
 using namespace FixConst;
 using MathConst::MY_PI;
@@ -76,17 +78,13 @@ inline void remove_axial_spin(const double *quat, double *L)
 
 FixNVESpherocyl::FixNVESpherocyl(LAMMPS *lmp, int narg, char **arg) : FixNVE(lmp, narg, arg)
 {
-  if (narg != 3 && narg != 5)
-    error->all(FLERR, "Illegal fix nve/spherocyl command");
-  use_rot_sllod = 0;
-  half_gdot_rot_sllod = 0.0;
-  if (narg == 5) {
-    if (strcmp(arg[3], "rot_sllod") != 0)
-      error->all(FLERR, "Illegal fix nve/spherocyl command");
-    const double gdot_rot = utils::numeric(FLERR, arg[4], false, lmp);
-    use_rot_sllod = 1;
-    half_gdot_rot_sllod = 0.5 * gdot_rot;
-  }
+  if (narg >= 4 && strcmp(arg[3], "rot_sllod") == 0)
+    error->all(FLERR,
+               "Fix nve/spherocyl: the rot_sllod option has been removed. In the lab frame "
+               "used with fix deform remap v, a free rigid body obeys dL/dt = torque; "
+               "Lees-Edwards images translate but do not rotate, so there is no rotational "
+               "SLLOD term (it rotated every L about z and biased orientation statistics).");
+  if (narg != 3) error->all(FLERR, "Illegal fix nve/spherocyl command");
 
   dtq = 0.0;
   avec = nullptr;
@@ -169,14 +167,6 @@ void FixNVESpherocyl::initial_integrate(int /*vflag*/)
       angmom[i][0] += dtf * torque[i][0];
       angmom[i][1] += dtf * torque[i][1];
       angmom[i][2] += dtf * torque[i][2];
-      if (use_rot_sllod) {
-        // Rotational SLLOD for simple shear Ux = gdot*y:
-        // dJx/dt = -(gdot/2) Jy, dJy/dt = +(gdot/2) Jx.
-        const double jx = angmom[i][0];
-        const double jy = angmom[i][1];
-        angmom[i][0] += dtq * (-half_gdot_rot_sllod * jy);
-        angmom[i][1] += dtq * ( half_gdot_rot_sllod * jx);
-      }
 
       quat = bonus[ellipsoid[i]].quat;
       remove_axial_spin(quat, angmom[i]);
@@ -219,12 +209,6 @@ void FixNVESpherocyl::final_integrate()
       angmom[i][0] += dtf * torque[i][0];
       angmom[i][1] += dtf * torque[i][1];
       angmom[i][2] += dtf * torque[i][2];
-      if (use_rot_sllod) {
-        const double jx = angmom[i][0];
-        const double jy = angmom[i][1];
-        angmom[i][0] += dtq * (-half_gdot_rot_sllod * jy);
-        angmom[i][1] += dtq * ( half_gdot_rot_sllod * jx);
-      }
 
       quat = bonus[ellipsoid[i]].quat;
       remove_axial_spin(quat, angmom[i]);

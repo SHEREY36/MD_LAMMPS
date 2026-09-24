@@ -1,0 +1,72 @@
+# ------------------------------------------------------------
+# Validation for lightweight collision-event counter
+# Expected outcome: exactly ONE new-contact event
+# (two rods collide once and separate)
+# ------------------------------------------------------------
+
+units           lj
+dimension       3
+atom_style      ellipsoid
+atom_modify     map array
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+region          box block -20 20 -5 5 -5 5 units box
+create_box      1 box
+
+variable d equal 1.0
+variable R equal 0.5*${d}
+variable H equal 0.5
+variable C equal ${R}+${H}
+variable Ltot equal 2.0*${H}+2.0*${R}
+
+variable rho equal 1.0
+variable Vsc equal PI*${R}*${R}*(2.0*${H}) + (4.0/3.0)*PI*${R}*${R}*${R}
+variable m equal ${rho}*${Vsc}
+
+# Start moderately separated along x; approach head-on.
+# This guarantees one collision inside the short validation run.
+create_atoms 1 single -1.6 0.0 0.0 units box
+create_atoms 1 single  1.6 0.0 0.0 units box
+
+set type 1 mass ${m}
+set type 1 shape ${R} ${R} ${C}
+set atom 1 quat 0.0 1.0 0.0 90.0
+set atom 2 quat 0.0 1.0 0.0 90.0
+
+group left  id 1
+group right id 2
+velocity left  set  1.0 0.0 0.0
+velocity right set -1.0 0.0 0.0
+
+variable e equal 0.8
+variable kn equal 3.26e8
+variable kt equal (2.0/7.0)*${kn}
+variable meff equal 0.5*${m}
+variable lne equal abs(ln(${e}))
+variable gamman equal 2.0*${lne}*sqrt(${kn}/${meff})/sqrt(PI*PI+${lne}*${lne})
+variable gammat equal 0.0
+variable mu equal 0.0
+variable dampflag equal 1
+
+pair_style gran/spherocyl/history ${kn} ${kt} ${gamman} ${gammat} ${mu} ${dampflag}
+pair_coeff * * ${R} ${H}
+
+neighbor        0.5 bin
+neigh_modify    delay 0 every 1 check yes
+fix             int all nve/spherocyl
+
+# small dt from collision time
+variable omega_d_sq equal ${kn}/${meff}-(${gamman}/2.0)^2
+variable tc equal PI/sqrt(${omega_d_sq})
+variable dt_opt equal ${tc}/50.0
+timestep ${dt_opt}
+
+thermo 10000
+thermo_style custom step time
+
+# Run long enough to collide once and separate.
+run 300000
+
+print "Validation run finished. Check collision_events.dat"

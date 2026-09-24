@@ -1,0 +1,27 @@
+# T5 elastic AR=2 rods under Lees-Edwards shear: dE = shear work exactly
+# (diag resid_rel ~ 0) and peculiar momentum conserved.
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data rods_ar2_T1.data
+set type 1 mass 1.000000357564170
+change_box all triclinic
+variable meff equal 0.5
+variable gref equal 2.26*sqrt(1.5)
+variable kn equal 5.0*v_meff*v_gref^2/(4.0*0.004^2.5)
+pair_style gran/spherocyl/mfix/history ${kn} 0 0 0 0 1
+pair_coeff * * 0.5 0.5
+neighbor 0.5 bin
+neigh_modify delay 0 every 1 check yes one 200 page 20000
+fix int all nve/spherocyl
+timestep $(2.94*0.004/v_gref/40.0)
+run 0
+velocity all ramp vx 0.0 $(0.1*ly) y $(ylo) $(yhi) sum yes
+fix shear all deform 1 xy erate 0.1 remap v units box
+fix diag all spherocyl/diag 20000 t5 sample 2000
+thermo 20000
+thermo_style custom step f_diag[1] f_diag[2] f_diag[10] f_diag[19]
+run 300000

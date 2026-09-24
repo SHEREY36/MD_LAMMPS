@@ -6,6 +6,7 @@
 #include "error.h"
 #include "fix.h"
 #include "fix_neigh_history.h"
+#include "fix_spherocyl_diag.h"
 #include "force.h"
 #include "math_extra.h"
 #include "memory.h"
@@ -15,6 +16,7 @@
 #include "update.h"
 
 #include <cmath>
+#include <cstring>
 
 using namespace LAMMPS_NS;
 
@@ -115,6 +117,7 @@ void PairGranSpherocylMfixHistory::compute(int eflag, int vflag)
   double *shear, *allshear, **firstshear;
 
   events_new_local_step = 0;
+  if (diag) diag->pair_begin();
 
   if (fix_rigid && neighbor->ago == 0) {
     int tmp;
@@ -205,12 +208,12 @@ void PairGranSpherocylMfixHistory::compute(int eflag, int vflag)
       double del[3], rhoi[3], rhoj[3];
       closest_approach_local(x[i], x[j], ui, uj, H[itype], H[jtype], del, rhoi, rhoj, rsq);
 
-      shear = &allshear[3 * jj];
+      double *hist = &allshear[size_history * jj];
+      shear = hist;
       if (rsq >= radsum * radsum) {
+        if (touch[jj] && diag) diag_release(i, j, nlocal, hist, rhoi, rhoj);
         touch[jj] = 0;
-        shear[0] = 0.0;
-        shear[1] = 0.0;
-        shear[2] = 0.0;
+        memset(hist, 0, size_history * sizeof(double));
         continue;
       }
 
@@ -250,7 +253,8 @@ void PairGranSpherocylMfixHistory::compute(int eflag, int vflag)
       ccel = kn * delta_sqrt * delta * rinv - damp;
       if (limit_damping && (ccel < 0.0)) ccel = 0.0;
 
-      if (touch[jj] == 0) {
+      const int newcontact = (touch[jj] == 0);
+      if (newcontact) {
         const bool owns_contact =
           force->newton_pair || j < nlocal || tag[i] < tag[j];
         if (owns_contact) events_new_local_step++;
@@ -292,8 +296,18 @@ void PairGranSpherocylMfixHistory::compute(int eflag, int vflag)
         torque[j][2] += tauj[2];
       }
 
+      if (diag) {
+        const double F[3] = {fx, fy, fz};
+        diag_contact(i, j, nlocal, newcontact, hist, del, r, radsum, rhoi, rhoj, ui, uj, F,
+                     kn * delta_sqrt * delta, 0.4 * kn * delta * delta * delta_sqrt);
+      }
+
+      // Virial with the centre-of-mass branch vector x_i - x_j (NOT the
+      // contact-point separation del): the shear work and the momentum flux
+      // across a plane are carried between particle centres.
       if (evflag)
-        ev_tally_xyz(i, j, nlocal, force->newton_pair, 0.0, 0.0, fx, fy, fz, delx, dely, delz);
+        ev_tally_xyz(i, j, nlocal, force->newton_pair, 0.0, 0.0, fx, fy, fz,
+                     x[i][0] - x[j][0], x[i][1] - x[j][1], x[i][2] - x[j][2]);
     }
   }
 

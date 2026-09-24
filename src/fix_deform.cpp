@@ -642,6 +642,18 @@ void FixDeform::pre_exchange()
 {
   if (flip == 0) return;
 
+  // Lees-Edwards consistency for remap v: atoms that crossed a periodic
+  // boundary since the last reneighboring must be wrapped by Domain::pbc()
+  // (which applies the h_rate velocity shift) BEFORE the flip.  Otherwise
+  // remap_all() below wraps them without the velocity shift and each such
+  // atom receives a spurious +-h_rate kick (e.g. +-gdot*Ly in x) at every flip,
+  // i.e. an unphysical jump of peculiar momentum and energy.
+  if (remapflag == Domain::V_REMAP) {
+    if (domain->triclinic) domain->x2lamda(atom->nlocal);
+    domain->pbc();
+    if (domain->triclinic) domain->lamda2x(atom->nlocal);
+  }
+
   domain->yz = set[3].tilt_target = set[3].tilt_flip;
   domain->xz = set[4].tilt_target = set[4].tilt_flip;
   domain->xy = set[5].tilt_target = set[5].tilt_flip;

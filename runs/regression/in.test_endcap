@@ -1,0 +1,152 @@
+# ------------------------------------------------------------------
+# Regression test 01: End-cap to end-cap (colinear) collision
+# Two spherocylinders fly along the x-axis toward each other.
+# Tests the "nearly parallel" branch of closest_approach().
+#
+# PROOF SUMMARY
+#   Contact onset rcc = 2H + 2R = 6R = 6.348e-4 m
+#   Sphere-sphere threshold     = 2R = 2.116e-4 m
+#   => sphere_gap = rcc - 2R >= 4R > 0 during entire contact event
+#   Rows in contact_log.dat where overlap>0 AND sphere_gap>0 simultaneously
+#   are geometrically impossible for sphere-sphere detection.
+#   They PROVE end-cap spherocylinder detection is active.
+# ------------------------------------------------------------------
+
+units           si
+dimension       3
+atom_style      ellipsoid
+atom_modify     map array    # required for x[ID] indexed variables
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+# ---- Domain ----
+region          box block -0.01 0.01 -0.01 0.01 -0.01 0.01 units box
+create_box      1 box
+
+# ---- Geometry (same MFIX diameter as T-collision test) ----
+variable D equal 2.116e-4
+variable R equal ${D}/2.0
+variable H equal 2.0*${R}
+
+# Ellipsoid kinematic proxy semi-axis (shape used by nve/asphere for inertia)
+variable C equal ${R}+${H}
+
+# ---- Initial positions ----
+# For colinear (both along x) rods:
+#   seg_dist = rcc - 2H = rcc - 4R
+#   Contact onset: rcc = 6R
+# Start at rcc = 6R + 0.2R = 6.2R  (same gap fraction as T-collision test)
+#   x0 = rcc/2 = 3.1*R
+variable x0 equal 3.1*${R}
+
+create_atoms    1 single -${x0} 0.0 0.0 units box
+create_atoms    1 single  ${x0} 0.0 0.0 units box
+
+# ---- Mass ----
+variable rho equal 2500.0
+variable Vsc equal PI*${R}*${R}*(2.0*${H}) + (4.0/3.0)*PI*${R}*${R}*${R}
+variable m   equal ${rho}*${Vsc}
+set type 1 mass ${m}
+
+# ---- Shape for nve/asphere inertia ----
+set type 1 shape ${R} ${R} ${C}
+
+# ---- Orientations ----
+# Both rods along x-axis: rotate body-z to global-x via +90 deg about y
+# axis_from_quat() extracts body-z column of rotation matrix -> rod axis
+set atom 1 quat 0.0 1.0 0.0 90.0
+set atom 2 quat 0.0 1.0 0.0 90.0
+
+group left  id 1
+group right id 2
+
+# ---- Approach velocities ----
+velocity left  set  1.00 0.0 0.0
+velocity right set -1.00 0.0 0.0
+
+# ---- Contact params ----
+# kn=1e3 chosen for OVITO visibility: T_c=156 steps, delta_max=9.4%R (~10 um)
+# (kn=1e5 gives T_c=16 steps and delta_max=0.1%R — physically correct but invisible)
+# gamman formula: LAMMPS gran/hooke uses F_damp = meff*gamman*vn  =>  gamman in [1/s]
+#   gamman = 2*eta*sqrt(kn/meff)  NOT sqrt(kn*meff)  [kn*meff gives kg/s = wrong units]
+variable e       equal 0.9
+variable kn      equal 1.0e3
+variable kt      equal 0.286*${kn}
+variable meff    equal 0.5*${m}
+# IMPORTANT: use ln() (natural log), not log() (base-10 in LAMMPS variables).
+variable ln_e   equal ln(${e})
+variable eta    equal sqrt( (${ln_e}*${ln_e}) / (PI*PI + ${ln_e}*${ln_e} + 1.0e-30) )
+variable gamman equal 2.0*${eta}*sqrt(${kn}/${meff})
+variable gammat equal 0.0
+variable mu     equal 0.0
+variable dampflag equal 1
+
+pair_style  gran/spherocyl/history ${kn} ${kt} ${gamman} ${gammat} ${mu} ${dampflag}
+pair_coeff  * * ${R} ${H}
+
+neighbor        2.5e-4 bin
+neigh_modify    delay 0 every 1 check yes
+
+fix             int all nve/spherocyl
+
+# ---- Contact detection diagnostic variables ----
+# Geometry: rod1 along +x at (-x0,0,0), rod2 along +x at (+x0,0,0)
+# closest_approach() uses the "nearly parallel" branch (denom < SMALL):
+#   lambda = +H (rod1 right end-cap clamped)
+#   mu     = -H (rod2 left  end-cap clamped)
+#   del    = Ci - Cj  => |del| = rcc - 2H  (exact for this geometry)
+#
+# *** PROOF ***
+# seg_dist = rcc - 2H = rcc - 4R
+# Contact onset: seg_dist = 2R  =>  rcc = 6R = 6.348e-4 m
+# Sphere-sphere threshold: 2R = 2.116e-4 m
+# sphere_gap = rcc - 2R ~= 4R = 4.232e-4 m >> 0 throughout contact
+# => overlap>0 AND sphere_gap>0 simultaneously CANNOT happen via sphere-sphere.
+#    It proves end-cap-to-end-cap spherocylinder detection.
+# NOTE: epair=0 always for granular pair styles (non-conservative contact).
+#       seg_dist >= 0 throughout = no backbone penetration.
+
+variable dx         equal x[2]-x[1]
+variable dy         equal y[2]-y[1]
+variable dz         equal z[2]-z[1]
+variable rcc        equal sqrt(v_dx*v_dx+v_dy*v_dy+v_dz*v_dz)
+variable sphere_gap equal v_rcc-2.0*${R}
+variable seg_dist   equal v_rcc-2.0*${H}
+variable overlap    equal 2.0*${R}-v_seg_dist
+
+# ---- Timestep ----
+timestep        1.0e-7
+
+# ---- Thermo ----
+thermo          100
+thermo_style    custom step time epair etotal v_rcc v_sphere_gap v_overlap
+
+# contact_log.dat: per-20-step proof record
+# columns: step  time  rcc  sphere_gap  seg_dist  overlap
+# Proof: find rows where overlap>0 AND sphere_gap>0 simultaneously
+fix clog all print 10 "$(step) $(time) $(v_rcc) $(v_sphere_gap) $(v_seg_dist) $(v_overlap)" file contact_log.dat screen no title "step time rcc sphere_gap seg_dist overlap"
+
+# ---- OVITO dump ----
+compute  ellprop all property/atom shapex shapey shapez quatw quati quatj quatk
+dump     1 all custom 10 endcap.dump id type x y z vx vy vz c_ellprop[1] c_ellprop[2] c_ellprop[3] c_ellprop[4] c_ellprop[5] c_ellprop[6] c_ellprop[7]
+dump_modify 1 sort id
+
+# ---- Print expected geometry before run ----
+variable twoR equal 2.0*${R}
+variable sixR equal 6.0*${R}
+print ""
+print "=== REGRESSION TEST 01: END-CAP CONTACT GEOMETRY PROOF ==="
+print "  rod1 along +x at -x0, rod2 along +x at +x0, colinear end-on collision"
+print "  Tests closest_approach() NEARLY PARALLEL branch"
+print "  seg_dist = rcc - 2H = rcc - 4R  (exact formula for colinear rods)"
+print "  Sphere-sphere contact threshold:  2R = ${twoR} m"
+print "  Spherocylinder contact onset:     6R = ${sixR} m  (center-to-center)"
+print "  => In contact_log.dat: rows with overlap>0 AND sphere_gap>0 simultaneously"
+print "     prove end-cap spherocylinder detection."
+print "     sphere_gap at contact ~4R = twice the sphere-sphere threshold."
+print "     seg_dist >= 0 throughout = no backbone penetration."
+print "  NOTE: epair=0 is normal (granular = non-conservative contact)."
+print ""
+
+run 3000

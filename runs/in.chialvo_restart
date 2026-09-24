@@ -1,0 +1,87 @@
+# ------------------------------------------------------------
+# RESTART RUN: read restart + apply shear with new gdot
+# ------------------------------------------------------------
+
+units          lj
+dimension      3
+atom_style     sphere
+boundary       p p p
+newton         off
+comm_modify    vel yes
+
+# -------------------------
+# Inputs you edit each iteration
+# -------------------------
+variable        rfile  string restart_last.shear
+variable        e      equal 1.0
+variable        gdot   equal 1.0e-2
+
+# keep these consistent with the fresh build
+variable        N      equal 2000
+variable        d      equal 1.0
+variable        rho_p  equal 1.0
+variable        phi    equal 0.01
+
+variable        kn     equal 1.0e4
+variable        kt     equal (2.0/7.0)*${kn}
+variable        gammat equal 0.0
+variable        mu     equal 0.0
+variable        dampflag equal 1
+
+timestep        5.0e-5
+
+print "MODE=restart: reading ${rfile}"
+read_restart    ${rfile}
+
+# recompute damping for current e
+variable        Vp    equal PI/6.0*${d}^3
+variable        m      equal ${rho_p}*${Vp}
+variable        meff   equal ${m}/2.0
+variable        eta    equal sqrt((log(${e})*log(${e})) / (PI*PI + log(${e})*log(${e}) + 1.0e-30))
+variable        gamman equal 2.0*${eta}*sqrt(${kn}*${meff})
+
+pair_style      gran/hooke/history ${kn} ${kt} ${gamman} ${gammat} ${mu} ${dampflag}
+pair_coeff      * *
+
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+# Integrator + shear
+fix             int all nve/sphere
+reset_timestep  0
+fix             shear all deform 1 xy erate ${gdot} remap v units box
+
+compute         Tdef all temp/deform
+thermo_modify   temp Tdef
+compute         P all pressure Tdef
+
+variable        vol equal vol
+variable        n   equal ${N}/v_vol
+variable        mpart equal ${rho_p}*(PI/6.0)*${d}^3
+variable        Cnu equal 1.0
+variable        nu0 equal v_Cnu*v_n*${d}*${d}*sqrt(c_Tdef/v_mpart)
+variable        aStar equal ${gdot}/v_nu0
+
+variable        pxx equal c_P[1]
+variable        pyy equal c_P[2]
+variable        pzz equal c_P[3]
+variable        pxy equal c_P[4]
+variable        Pxxs equal v_pxx/(v_n*c_Tdef)
+variable        Pyys equal v_pyy/(v_n*c_Tdef)
+variable        Pzzs equal v_pzz/(v_n*c_Tdef)
+variable        Pxys equal v_pxy/(v_n*c_Tdef)
+
+variable        xytilt equal xy
+variable        gamma  equal v_xytilt/ly
+
+thermo          2000
+thermo_style    custom step time temp xy v_gamma v_aStar v_Pxxs v_Pyys v_Pzzs v_Pxys
+
+fix             av all ave/time 200 50 10000 v_aStar v_Pxxs v_Pyys v_Pzzs v_Pxys v_gamma file shear_stats.dat
+
+dump            dmp all custom 100000 dump.lammpstrj id type x y z vx vy vz radius
+dump_modify     dmp sort id
+
+run             3000000
+write_restart   restart_last.shear
+

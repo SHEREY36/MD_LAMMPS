@@ -1,0 +1,34 @@
+# T3b oblique, off-centre collision of two AR=2 rods (lever arms != 0, rotation).
+# Checks: linear momentum and total angular momentum (orbital + spin) conserved,
+# energy bookkeeping dE = W_nc exact to O(dt^2), collision recorded exactly once.
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data data.two_rods_offcenter
+set type 1 mass 1.0
+variable meff equal 0.5
+variable lne equal abs(ln(0.7))
+variable kn equal 5.0*v_meff*4.0/(4.0*0.004^2.5)
+variable eta equal sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne)
+pair_style gran/spherocyl/mfix/history ${kn} 0 ${eta} 0 0 1
+pair_coeff * * 0.5 0.5
+fix int all nve/spherocyl
+timestep $(2.94*0.004/2.0/40.0)
+compute am all property/atom angmomx angmomy angmomz
+compute spin all reduce sum c_am[1] c_am[2] c_am[3]
+# total angular momentum about the origin: sum m (x_u x v) + spin
+compute xu all property/atom xu yu zu
+variable lox atom mass*(c_xu[2]*vz-c_xu[3]*vy)
+variable loy atom mass*(c_xu[3]*vx-c_xu[1]*vz)
+variable loz atom mass*(c_xu[1]*vy-c_xu[2]*vx)
+compute orb all reduce sum v_lox v_loy v_loz
+variable Px equal mass[1]*vx[1]+mass[2]*vx[2]
+variable Py equal mass[1]*vy[1]+mass[2]*vy[2]
+variable Pz equal mass[1]*vz[1]+mass[2]*vz[2]
+fix diag all spherocyl/diag 4000 t3b log_fraction 1.0
+fix out all print 4000 "$(step) $(v_Px:%.14g) $(v_Py:%.14g) $(v_Pz:%.14g) $(c_orb[1]+c_spin[1]:%.14g) $(c_orb[2]+c_spin[2]:%.14g) $(c_orb[3]+c_spin[3]:%.14g)" file t3b_conserved.dat screen no title "# step Px Py Pz Jx Jy Jz"
+run 0
+run 4000

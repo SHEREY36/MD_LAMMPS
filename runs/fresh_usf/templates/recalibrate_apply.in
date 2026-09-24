@@ -1,0 +1,23 @@
+# Hard-particle recalibration from the diag statistics of the last run.
+#   f_diag[4]  mean max overlap/(Ri+Rj)        f_diag[23] median contact time
+#   f_diag[24] 10th-percentile contact time    f_diag[25] median contact (steps)
+# Hertz at fixed impact speed: delta ~ kn^(-2/5) and t_c ~ delta, so after
+# kn -> kn*dfac^2.5 every contact time scales by 1/dfac.
+# The time step uses ROBUST statistics (median, 10th percentile), not the mean:
+# rare long, rotation-driven contacts (several % at low alpha) inflate the mean
+# contact time and would make dt far too large for ordinary collisions.
+variable        dfac0  equal $(f_diag[4]/v_delta_target)
+variable        dfac   equal $(ternary(v_dfac0<0.2,0.2,ternary(v_dfac0>5.0,5.0,v_dfac0)))
+variable        tmed   equal $(f_diag[23])
+variable        tp10   equal $(f_diag[24])
+print           "RECALIBRATE: measured mean dmax/d=$(f_diag[4]) (target ${delta_target}), max dmax/d=$(f_diag[5]), median contact=$(f_diag[25]) steps, mean=$(f_diag[6]) steps, min=$(f_diag[7]) steps"
+variable        kn     equal $(v_kn*v_dfac^2.5)
+variable        eta    equal $(sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne))
+# median collision -> Nc_target steps, 10% fastest collisions -> at least 20 steps
+variable        dtmed  equal $(v_tmed/v_dfac/v_Nc_target)
+variable        dtp10  equal $(v_tp10/v_dfac/20.0)
+variable        dtrun  equal $(ternary(v_dtmed<v_dtp10,v_dtmed,v_dtp10))
+variable        nwin   equal $(round(v_strain_window/(v_gdot*v_dtrun)))
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1
+timestep        ${dtrun}
+print           "RECALIBRATE: kn=${kn} eta=${eta} dt=${dtrun} (median-based ${dtmed}, p10-based ${dtp10}) nwin=${nwin}"

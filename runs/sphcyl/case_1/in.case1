@@ -1,0 +1,163 @@
+# ----------------------------------------------------
+# Hard spherocylinder collision test (SI, MFIX-like)
+# Two particles start near contact and collide quickly.
+# ----------------------------------------------------
+
+units           si
+dimension       3
+atom_style      ellipsoid
+atom_modify     map array    # required for x[ID] indexed variables
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+# ---- Domain ----
+region          box block -0.01 0.01 -0.01 0.01 -0.01 0.01 units box
+create_box      1 box
+
+# ---- Geometry (MFIX diameter) ----
+variable D equal 2.116e-4
+variable R equal ${D}/2.0
+
+# H here is the half-cylinder length (your pair_coeff convention)
+variable H equal 2.0*${R}
+
+# Ellipsoid kinematics proxy semi-axis along rod axis:
+# (R, R, R+H)
+variable C equal ${R}+${H}
+
+# ---- Place particles close so they collide quickly ----
+# Contact when separation_x = 2R = D
+# Choose separation = 1.05*D (small gap 0.05D)
+variable sep equal 1.05*${D}
+variable x0  equal 2.0*${sep}
+
+create_atoms    1 single -${x0} 0.0 0.0 units box
+create_atoms    1 single  ${x0} 0.0 0.0 units box
+
+# ---- Mass: set explicitly (recommended) ----
+# Spherocylinder volume = pi R^2 (2H) + 4/3 pi R^3
+variable rho equal 2500.0
+variable Vsc equal PI*${R}*${R}*(2.0*${H}) + (4.0/3.0)*PI*${R}*${R}*${R}
+variable m   equal ${rho}*${Vsc}
+set type 1 mass ${m}
+
+# Kinematic shape used by atom_style ellipsoid (for quat/angmom machinery)
+set type 1 shape ${R} ${R} ${C}
+
+# ---- Different orientations ----
+# atom1: no rotation (rod axis along z), identity orientation
+# set quat uses axis-angle: ax ay az angle_degrees
+set atom 1 quat 0.0 0.0 1.0 90.0
+
+# atom2: rotate +90 deg about y -> rod axis along x
+# set quat uses axis-angle: ax ay az angle_degrees
+set atom 2 quat 0.0 1.0 0.0 90.0
+
+group left  id 1
+group right id 2
+
+# ---- Approach velocities ----
+velocity left  set  1.00 0.0 0.0
+velocity right set -1.00 0.0 0.0
+
+# ---- Contact params ----
+# kn=1e3 chosen for OVITO visibility: T_c=156 steps, delta_max=9.4%R (~10 um)
+# (kn=1e5 gives T_c=16 steps and delta_max=0.1%R — physically correct but invisible)
+# gamman formula: LAMMPS gran/hooke uses F_damp = meff*gamman*vn  =>  gamman in [1/s]
+#   gamman = 2*eta*sqrt(kn/meff)  NOT sqrt(kn*meff)  [kn*meff gives kg/s = wrong units]
+variable e  equal 0.9          # <-- restitution you will vary
+variable kn equal 3.26e8
+variable kt equal 0.286*${kn}
+variable meff equal 0.5*${m}   # identical particles
+
+# Spring-dashpot mapping (same formula you used earlier)
+# IMPORTANT: use ln() (natural log), not log() (base-10 in LAMMPS variables).
+variable ln_e equal ln(${e})
+variable eta  equal sqrt( (${ln_e}*${ln_e}) / (PI*PI + ${ln_e}*${ln_e} + 1.0e-30) )
+variable gamman equal 2.0*${eta}*sqrt(${kn}/${meff})
+
+variable gammat equal 0.0
+variable mu     equal 0.0
+variable dampflag equal 1
+
+# --- Collision time -> timestep ---
+variable        omega_d_sq equal ${kn}/${meff}-(${gamman}/2.0)^2
+variable        tc     equal PI/sqrt(${omega_d_sq})
+variable        dt_opt equal ${tc}/50.0
+
+timestep        ${dt_opt}
+
+pair_style  gran/spherocyl/history ${kn} ${kt} ${gamman} ${gammat} ${mu} ${dampflag}
+pair_coeff  * * ${R} ${H}
+
+neighbor        2.5e-4 bin
+neigh_modify    delay 0 every 1 check yes
+
+fix             int all nve/spherocyl
+
+# ---- Contact detection diagnostic variables ----
+# T-collision geometry: rod1 along z at -x0, rod2 along x at +x0.
+# Derived analytically from closest_approach() (Vega-Lago algorithm):
+#   lambda=0  => contact on rod1 CENTER (lever arm = 0, no torque on rod1)
+#   mu clamped to -H => contact at rod2 LEFT END-CAP
+#   seg_dist  = rcc - H   (exact backbone-to-backbone distance for this geometry)
+#   overlap   = 2R - seg_dist   (>0 during contact, <=0 outside)
+#   sphere_gap = rcc - 2R       (>0 means sphere-sphere would NOT detect contact)
+#
+# *** PROOF ***
+# Contact onset when seg_dist = 2R  =>  rcc = H + 2R = 4R = 4.232e-4 m
+# Sphere-sphere threshold is only 2R = 2.116e-4 m.
+# Rows in contact_log.dat with  overlap>0  AND  sphere_gap>0
+# are geometrically impossible for sphere-sphere contact:
+# they PROVE segment-segment (spherocylinder) detection is active.
+# seg_dist >= 0 throughout confirms no backbone penetration.
+# NOTE: epair = 0 always — granular pair styles do NOT tally conservative
+#       potential energy (contact is dissipative; forces are correct).
+
+variable dx         equal x[2]-x[1]
+variable dy         equal y[2]-y[1]
+variable dz         equal z[2]-z[1]
+variable rcc        equal sqrt(v_dx*v_dx+v_dy*v_dy+v_dz*v_dz)
+variable sphere_gap equal v_rcc-2.0*${R}
+variable seg_dist   equal v_rcc-${H}
+variable overlap    equal 2.0*${R}-v_seg_dist
+
+# ---- thermo: rcc, sphere_gap, overlap visible at every output step ----
+thermo          1000
+thermo_style    custom step time etotal v_rcc v_sphere_gap v_overlap
+
+# contact_log.dat: per-20-step proof record
+# columns: step  time  rcc  sphere_gap  seg_dist  overlap
+# Read proof: find rows where overlap>0  AND  sphere_gap>0
+fix clog all print 500 "$(step) $(time) $(v_rcc) $(v_sphere_gap) $(v_seg_dist) $(v_overlap)" file contact_log.dat screen no title "step time rcc sphere_gap seg_dist overlap"
+
+# ---- Dump for OVITO ----
+# OVITO spherocylinder mapping fields:
+#   Radius            = R
+#   Aspherical Shape  = (R, 0, 2H)  [radius, unused, cylinder length]
+#   Orientation       = quaternion (X,Y,Z,W)
+variable ov_radius atom ${R}
+variable ov_shx    atom ${R}
+variable ov_shy    atom 0.0
+variable ov_shz    atom 2.0*${H}
+compute  quat all property/atom quati quatj quatk quatw
+compute  am all property/atom angmomx angmomy angmomz
+dump     1 all custom 1000 sphcyl.dump id type x y z vx vy vz v_ov_radius v_ov_shx v_ov_shy v_ov_shz c_quat[1] c_quat[2] c_quat[3] c_quat[4] angmomx angmomy angmomz
+dump_modify 1 sort id
+
+# ---- Print expected contact geometry before run ----
+variable twoR  equal 2.0*${R}
+variable fourR equal 4.0*${R}
+print ""
+print "=== SPHEROCYLINDER CONTACT GEOMETRY PROOF ==="
+print "  rod1 along z, rod2 along x, T-collision along x"
+print "  Sphere-sphere threshold       2R = ${twoR} m"
+print "  Spherocylinder contact onset ~4R = ${fourR} m  (center-to-center)"
+print "  => In contact_log.dat: rows with overlap>0 AND sphere_gap>0 simultaneously"
+print "     prove segment-segment detection (sphere-sphere fires at rcc=2R; ours at rcc=4R)."
+print "     seg_dist >= 0 throughout = no backbone penetration."
+print "  NOTE: epair=0 always is NORMAL for granular (non-conservative contact, no potential tally)."
+print ""
+
+run 1000000

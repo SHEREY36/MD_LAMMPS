@@ -1,0 +1,29 @@
+# T3 head-on collision of two spheres (H=0), m=1 each, approach speed g=2.
+# Checks: realised restitution (translational and contact-point) = alpha, for
+#   style=hertz : eta = sqrt(5) sqrt(kn m*) |ln a|/sqrt(pi^2+ln^2 a)   (target overlap 0.004 d)
+#   style=hooke : gamman = 2|ln a| sqrt(kn/m*)/sqrt(pi^2+ln^2 a)         (target overlap 0.004 d)
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data data.two_spheres
+set type 1 mass 1.0
+variable meff equal 0.5
+variable lne equal abs(ln(${alpha}))
+if "${style} == hertz" then &
+  "variable kn equal 5.0*v_meff*4.0/(4.0*0.004^2.5)" &
+  "variable eta equal sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne)" &
+  "pair_style gran/spherocyl/mfix/history ${kn} 0 ${eta} 0 0 1" &
+  "variable tc equal 2.94*0.004/2.0" &
+else &
+  "variable kn equal v_meff*4.0/(0.004^2)" &
+  "variable gam equal 2.0*v_lne*sqrt(v_kn/v_meff)/sqrt(PI*PI+v_lne*v_lne)" &
+  "pair_style gran/spherocyl/history ${kn} 0 ${gam} 0 0 1" &
+  "variable tc equal PI*sqrt(v_meff/v_kn)"
+pair_coeff * * 0.5 0.0
+fix int all nve/spherocyl
+timestep $(v_tc/40.0)
+fix diag all spherocyl/diag 2000 t3_${style}_${alpha} log_fraction 1.0
+run 2000

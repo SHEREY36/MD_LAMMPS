@@ -1,0 +1,122 @@
+# ============================================================
+# REGRESSION TEST CASE 2: Barrel-to-barrel side collision
+# ============================================================
+# Both rods oriented along Z axis, centers at same z=0.
+# They approach each other along X. The cylindrical barrels collide.
+#
+# EXPECTED PHYSICS:
+#   - No rotation (force direction X passes through both rod centers
+#     when z-centers are aligned, giving zero lever arm)
+#   - Particles rebound along X only
+#   - angmom stays zero throughout
+#   - Post-collision: |vx1| = |vx2| = initial speed * e (elastic factor)
+#
+# GEOMETRY:
+#   Rod axis: Z direction (default orientation, identity quaternion)
+#   Contact distance (C-C along X): 2R = D = 2.116e-4 m
+#   Both rods at z=0 => maximum backbone overlap (lever arm = 0 => no torque)
+#   Initial separation: 1.05 * 2R
+#
+# VALIDATION:
+#   overlap > 0 during contact
+#   sphere_gap = rcc - 2R: can be ~0 (barrel contact IS sphere-sphere equivalent)
+#   angmom = 0 throughout
+#   The contact force is purely along X through both centers
+# ============================================================
+
+units           si
+dimension       3
+atom_style      ellipsoid
+atom_modify     map array
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+region          box block -0.005 0.005 -0.005 0.005 -0.005 0.005 units box
+create_box      1 box
+
+# ---- Geometry ----
+variable D equal 2.116e-4
+variable R equal ${D}/2.0
+variable H equal 2.0*${R}
+variable C equal ${R}+${H}
+
+# Contact C-C distance along X = 2R (barrel-to-barrel)
+variable contact_dist equal 2.0*${R}
+variable sep equal 0.525*${contact_dist}    # 1.05/2 * 2R
+
+# ---- Create particles ----
+# Both at z=0, approaching along X
+create_atoms    1 single -${sep} 0.0 0.0 units box
+create_atoms    1 single  ${sep} 0.0 0.0 units box
+
+# ---- Mass ----
+variable rho equal 2500.0
+variable Vsc equal PI*${R}*${R}*(2.0*${H}) + (4.0/3.0)*PI*${R}*${R}*${R}
+variable m   equal ${rho}*${Vsc}
+set type 1 mass ${m}
+set type 1 shape ${R} ${R} ${C}
+
+# ---- Orientation: both rods along Z (default / identity) ----
+# Body-Z is already lab-Z; no rotation needed
+# LAMMPS identity quaternion: axis=Z, angle=0
+set atom 1 quat 0.0 0.0 1.0 0.0
+set atom 2 quat 0.0 0.0 1.0 0.0
+
+# ---- Velocities: approach along X ----
+velocity all set 0.0 0.0 0.0
+velocity atom 1 set  1.0 0.0 0.0
+velocity atom 2 set -1.0 0.0 0.0
+
+# ---- Contact parameters ----
+variable e      equal 0.9
+variable kn     equal 1.0e3
+variable kt     equal 0.286*${kn}
+variable meff   equal 0.5*${m}
+variable ln_e   equal log(${e})
+variable eta    equal sqrt(${ln_e}*${ln_e}/(PI*PI+${ln_e}*${ln_e}+1.0e-30))
+variable gamman equal 2.0*${eta}*sqrt(${kn}/${meff})
+variable gammat equal 0.0
+variable mu     equal 0.0
+variable dampflag equal 1
+
+pair_style  gran/spherocyl/history ${kn} ${kt} ${gamman} ${gammat} ${mu} ${dampflag}
+pair_coeff  * * ${R} ${H}
+
+neighbor        5.0e-4 bin
+neigh_modify    delay 0 every 1 check yes
+
+fix             int all nve/spherocyl
+
+# ---- Diagnostic variables ----
+variable dx      equal x[2]-x[1]
+variable dy      equal y[2]-y[1]
+variable dz      equal z[2]-z[1]
+variable rcc     equal sqrt(v_dx*v_dx+v_dy*v_dy+v_dz*v_dz)
+variable overlap equal 2.0*${R}-v_rcc    # >0 during contact
+variable vx1     equal vx[1]
+variable vx2     equal vx[2]
+
+timestep        1.0e-7
+
+thermo          50
+thermo_style    custom step time v_rcc v_overlap v_vx1 v_vx2 ke
+
+fix clog all print 10 "$(step) $(time) $(v_rcc) $(v_overlap) $(vx[1]) $(vx[2])" &
+    file case2_contact_log.dat screen no &
+    title "step time rcc overlap vx1 vx2"
+
+compute  quat all property/atom quati quatj quatk quatw
+dump 1 all custom 10 case2.dump id type x y z vx vy vz &
+    angmomx angmomy angmomz &
+    c_quat[1] c_quat[2] c_quat[3] c_quat[4]
+dump_modify 1 sort id
+
+print ""
+print "=== CASE 2: BARREL-TO-BARREL SIDE COLLISION ==="
+print "Both rods along Z, approach along X. Centers co-planar at y=0."
+print "EXPECTED: zero angular momentum throughout, rebound along X only."
+print "VALIDATION: overlap>0 during contact, angmom=0 always."
+print ""
+
+run 3000

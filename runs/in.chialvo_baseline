@@ -1,0 +1,213 @@
+# ============================================================
+# Chialvo & Sundaresan (2013) DEM baseline for frictionless spheres.
+# Single template with two modes:
+#   use_sllod = 0  -> mode=chialvo    (pure Lees-Edwards baseline)
+#   use_sllod = 1  -> mode=usf_sllod  (adds -gdot*m*vy term)
+# ============================================================
+
+units           lj
+dimension       3
+atom_style      sphere
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+# ============================================================
+# USER PARAMETERS
+# Keep gdot = 1.8 for fast runs (your preferred setting).
+# ============================================================
+variable        N_part equal 2000           # number of particles
+variable        phi    equal 0.20           # volume fraction
+variable        d      equal 1.0            # particle diameter
+variable        rho_p  equal 1.0            # particle material density
+variable        e      equal 0.99           # normal restitution coefficient
+variable        mu     equal 0.0            # friction coefficient (0 = frictionless)
+
+# Contact parameters used in Chialvo-style LSD model
+variable        kn       equal 3.26e8
+variable        kt       equal $(2.0/7.0*v_kn)
+variable        gammat   equal 0.0
+variable        dampflag equal 1
+
+# Fast setting requested by user
+variable        gdot equal 1.8
+variable        use_sllod equal 0     # 0=chialvo, 1=usf_sllod
+
+variable        T0   equal 1.0e-3
+variable        seed equal 12345
+
+# ============================================================
+# DERIVED QUANTITIES
+# ============================================================
+variable        Vp    equal PI/6.0*${d}^3
+variable        m     equal ${rho_p}*${Vp}
+variable        meff  equal ${m}/2.0
+
+# e = exp( -gamma_n*pi / sqrt(4*kn/meff - gamma_n^2) )
+# => gamma_n = 2*|ln e|*sqrt(kn/meff) / sqrt(pi^2 + ln(e)^2)
+variable        lne    equal abs(ln(${e}))
+variable        gamman equal 2.0*${lne}*sqrt(${kn}/${meff})/sqrt(PI*PI+${lne}*${lne})
+
+# Conservative timestep from damped collision period
+variable        omega_d_sq equal ${kn}/${meff}-(${gamman}/2.0)^2
+variable        tc         equal PI/sqrt(${omega_d_sq})
+variable        dt_opt     equal ${tc}/50.0
+
+print "====================================="
+if "${use_sllod} > 0.5" then "print MODE_usf_sllod" else "print MODE_chialvo"
+print "gamman = ${gamman}"
+print "tc (collision time) = ${tc}"
+print "optimal dt = ${dt_opt}"
+print "ghat = $(v_gdot*v_d/sqrt(v_kn/(v_rho_p*v_d)))"
+print "kn = ${kn}"
+print "====================================="
+
+timestep        ${dt_opt}
+
+# ============================================================
+# BOX SETUP FROM PHI
+# ============================================================
+variable        Vbox  equal ${N_part}*${Vp}/${phi}
+variable        L     equal ${Vbox}^(1.0/3.0)
+variable        ncell equal ceil(${N_part}^(1.0/3.0))
+
+lattice         sc 1.0
+region          boxlat block 0 ${ncell} 0 ${ncell} 0 ${ncell} units lattice
+create_box      1 boxlat
+create_atoms    1 region boxlat
+
+variable        Nnow equal count(all)
+variable        Ndel equal $(v_Nnow - v_N_part)
+if "${Ndel} > 0" then "delete_atoms random count ${Ndel} no all NULL ${seed}"
+
+variable        scale equal ${L}/${ncell}
+change_box      all x scale ${scale} y scale ${scale} z scale ${scale} remap
+change_box      all triclinic
+
+set             type 1 diameter ${d} density ${rho_p}
+
+# ============================================================
+# INTERACTION
+# ============================================================
+pair_style      gran/hooke/history ${kn} ${kt} ${gamman} ${gammat} ${mu} ${dampflag}
+pair_coeff      * *
+
+neighbor        0.5 bin
+neigh_modify    delay 0 every 1 check yes
+
+# ============================================================
+# STAGE 1: REMOVE OVERLAPS
+# ============================================================
+fix             relax all nve/limit 0.05
+run             2000
+unfix           relax
+
+# ============================================================
+# STAGE 2: EQUILIBRATE WITHOUT SHEAR
+# ============================================================
+fix             eq all nve/sphere
+velocity        all create ${T0} ${seed} mom yes rot yes dist gaussian
+run             5000
+unfix           eq
+
+# ============================================================
+# STAGE 3: SIMPLE SHEAR (LEES-EDWARDS VIA FIX DEFORM)
+# ============================================================
+reset_timestep  0
+
+# Seed the expected streaming profile to shorten transient
+# ramp must span the ACTUAL box (change_box ... scale keeps the box centred, so
+# ylo != 0); temp/deform subtracts gdot*(y-ylo). A mismatch leaves a permanent
+# uniform peculiar velocity (peculiar momentum is conserved) that inflates T.
+velocity        all ramp vx 0.0 $(v_gdot*ly) y $(ylo) $(yhi) sum no
+
+fix             shear all deform 1 xy erate ${gdot} remap v units box
+fix             nve   all nve/sphere
+# NOTE: the manual SLLOD force (use_sllod=1) double-counts the shear coupling with
+# remap v (stored velocities are lab velocities, dv/dt = F/m). Kept only for
+# reproducing old runs; it must stay 0 for physical USF.
+if "${use_sllod} > 0.5" then "print 'WARNING: use_sllod=1 is unphysical (shear coupling counted twice)'"
+if "${use_sllod} > 0.5" then "variable fsllod atom -v_gdot*mass*vy"
+if "${use_sllod} > 0.5" then "fix sllod_corr all addforce v_fsllod 0.0 0.0"
+
+compute         Tdef  all temp/deform
+compute         Press all pressure Tdef
+thermo_modify   temp Tdef
+
+# ============================================================
+# STRESS/SCALING OUTPUTS
+# ============================================================
+variable        p           equal (c_Press[1]+c_Press[2]+c_Press[3])/3.0
+variable        tau         equal -c_Press[4]    # P_xy (was Press[5] = P_xz)
+variable        gd2         equal (${gdot}*${d})^2
+variable        pScaled     equal v_p/(${rho_p}*v_gd2)
+variable        TScaled     equal c_Tdef/v_gd2
+variable        tau_over_p  equal v_tau/v_p
+
+variable        vol  equal vol
+variable        n    equal ${N_part}/v_vol
+variable        Pxxs equal c_Press[1]/(v_n*c_Tdef)
+variable        Pyys equal c_Press[2]/(v_n*c_Tdef)
+variable        Pzzs equal c_Press[3]/(v_n*c_Tdef)
+variable        Pxys equal c_Press[4]/(v_n*c_Tdef)
+
+# Track tilt for possible post-processing around box flips
+variable        tilt_xy  equal xy
+variable        gamma_xy equal xy/ly
+
+# Velocity-profile diagnostic for checking linear vx(y)
+variable        Nbins_v      equal round(${L}/${d})
+variable        binwidth_red equal 1.0/${Nbins_v}
+compute         chunks all chunk/atom bin/1d y lower ${binwidth_red} units reduced
+fix             vprof  all ave/chunk 200 50 10000 chunks vx vy vz density/number &
+                file velocity_profile.dat
+
+thermo          1000
+thermo_style    custom step time temp v_gamma_xy v_tilt_xy &
+                v_p v_tau v_pScaled v_tau_over_p v_TScaled &
+                c_Press[1] c_Press[2] c_Press[3] c_Press[4]
+
+# ============================================================
+# TRANSIENT + PRODUCTION WINDOWS
+# ============================================================
+variable        strain_transient equal 50.0
+variable        steps_transient  equal round(v_strain_transient/(${gdot}*${dt_opt}))
+print "Transient run: ${steps_transient} steps (${strain_transient} strain units)"
+
+run             ${steps_transient}
+run             ${steps_transient}
+
+write_restart   restart_after_transient.shear
+
+variable        strain_prod equal 50.0
+variable        steps_prod  equal round(v_strain_prod/(${gdot}*${dt_opt}))
+print "Production run: ${steps_prod} steps (${strain_prod} strain units per block)"
+
+fix   avCh    all ave/time 100 50 5000 &
+              v_pScaled v_tau_over_p v_TScaled v_gamma_xy v_tilt_xy &
+              file chialvo_stats.dat
+
+fix   avShear all ave/time 200 50 10000 &
+              v_Pxxs v_Pyys v_Pzzs v_Pxys v_gamma_xy v_tilt_xy &
+              file shear_stats.dat
+
+fix   avRaw   all ave/time 100 50 5000 &
+              c_Press[1] c_Press[2] c_Press[3] c_Press[4] &
+              v_p v_tau v_tilt_xy c_Press[5] &
+              file raw_stress.dat
+
+run             ${steps_prod}
+run             ${steps_prod}
+run             ${steps_prod}
+run             ${steps_prod}
+
+write_restart   restart_final.shear
+
+print "====================================="
+if "${use_sllod} > 0.5" then "print DONE_mode_usf_sllod" else "print DONE_mode_chialvo"
+print "Output files:"
+print "  chialvo_stats.dat"
+print "  shear_stats.dat"
+print "  raw_stress.dat (includes Pxx,Pyy,Pzz,Pxy,p,tau,tilt_xy,Pxz)"
+print "  velocity_profile.dat"
+print "====================================="
