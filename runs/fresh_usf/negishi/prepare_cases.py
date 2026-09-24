@@ -32,8 +32,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FRESH = os.path.dirname(HERE)
 
 DT_COEF = 1.6e-4          # dt * sqrt(T/m) measured for well-resolved cases
-RATE = 1.4e6              # atom-steps / s / rank, measured on a 6-core (12-thread) Intel
-                          # workstation running 3 cases at once: conservative for Negishi
+RATE = 4.2e6              # atom-steps / s / rank on Negishi (EPYC 7763), measured on the 50-case
+                          # production of Sep 2026 (the desktop value 1.4e6 over-predicted 3x)
 EFF = {4: 1.00, 8: 0.85, 16: 0.65}
 TIME_BINS = [4, 8, 12, 24, 48, 72]
 

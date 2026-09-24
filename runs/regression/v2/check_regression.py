@@ -161,10 +161,11 @@ try:
     Tstar = T / (m * gd**2)
     P = {k: (st[:, c["K" + k]] + st[:, c["C" + k]]).mean() / (n * T) for k in ("xx", "yy", "zz", "xy")}
     Pyx = ((st[:, c["Kxy"]] + st[:, c["Cyx"]]).mean()) / (n * T)
-    # Boltzmann DSMC (dsmc_usf_spheres.py, alpha=0.7): T*=189.5 ; P* = 1.424 0.766 0.810 -0.501
+    # Boltzmann DSMC, alpha=0.7, time step extrapolated to 0 (runs/fresh_usf/reference/
+    # dsmc_spheres_usf.txt): T*=192.6 ; P* = 1.427 0.765 0.808 -0.506
     # Enskog collisional pressure at phi=0.01 adds ~ 2(1+a) phi g0 = 0.035 to the diagonal
-    ref = {"xx": 1.424 + 0.035, "yy": 0.766 + 0.035, "zz": 0.810 + 0.035, "xy": -0.501}
-    check("T6 sphere USF: T/(m gdot^2 d^2) vs Boltzmann DSMC (189.5)", abs(Tstar / 189.5 - 1) < 0.06,
+    ref = {"xx": 1.427 + 0.035, "yy": 0.765 + 0.035, "zz": 0.808 + 0.035, "xy": -0.506}
+    check("T6 sphere USF: T/(m gdot^2 d^2) vs Boltzmann DSMC (192.6)", abs(Tstar / 192.6 - 1) < 0.06,
           f"T* = {Tstar:.1f}")
     for k in ref:
         check(f"T6 sphere USF: P*_{k} vs DSMC(+Enskog)", abs(P[k] - ref[k]) < 0.04,

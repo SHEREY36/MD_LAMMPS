@@ -14,9 +14,10 @@ Figures
   fig5_structure.png        nematic order S2, density modes S(k), D(4^3), collision-count
                             dispersion (clustering indicators)
   fig6_timeseries_<case>.png   stationarity of one case (T*, P*_xy, energy residual)
+  fig7_sphere_validation.png   AR=1 kinetic stress and T* vs converged Boltzmann DSMC
 
-Cases whose contacts were under-resolved (>1% of contacts shorter than 15 steps;
-the AR=2, alpha<=0.65 pilot runs) are drawn with hollow markers.
+Cases whose contacts were under-resolved (>1% of contacts shorter than 15 steps)
+are drawn with hollow markers.
 """
 import argparse
 import glob
@@ -56,11 +57,18 @@ def grad_spheres(alpha):
     return dict(xx=3 - 2 * pyy, yy=pyy, zz=pyy, xy=-a * pyy / b)
 
 
-DSMC_SPHERES = {  # runs/regression/v2/dsmc_usf_spheres.py (Boltzmann, phi -> 0)
-    0.5: dict(xx=1.6644, yy=0.6373, zz=0.6983, xy=-0.5717),
-    0.7: dict(xx=1.4238, yy=0.7661, zz=0.8101, xy=-0.5006),
-    0.9: dict(xx=1.1507, yy=0.9150, zz=0.9343, xy=-0.3258),
-}
+def load_dsmc():
+    """Boltzmann DSMC for dilute smooth inelastic spheres (kinetic stress only), time step
+    extrapolated to zero: reference/dsmc_spheres_usf.txt (see the header there)."""
+    f = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference", "dsmc_spheres_usf.txt")
+    out = {}
+    if os.path.exists(f):
+        for row in np.loadtxt(f, comments="#", ndmin=2):
+            out[round(float(row[0]), 3)] = dict(T=row[1], xx=row[2], yy=row[3], zz=row[4], xy=row[5])
+    return out
+
+
+DSMC_SPHERES = load_dsmc()
 
 
 def old_dem(old_root):
@@ -131,7 +139,7 @@ def fig_reduced_stress(rows, old, outdir):
                              ("$P^*_{xx}$", "$P^*_{yy}$", "$P^*_{zz}$", "$P^*_{xy}$")):
         ax.plot(al, [k[comp] for k in kt], color=INK, lw=1.2, label="kinetic theory, spheres (Grad)")
         ax.plot(list(DSMC_SPHERES), [v[comp] for v in DSMC_SPHERES.values()], "x", color=INK,
-                ms=8, mew=1.8, label="Boltzmann DSMC, spheres")
+                ms=8, mew=1.8, label="Boltzmann DSMC, spheres (kinetic only)")
         if old:
             ax.plot(list(old), [v[comp] for v in old.values()], "o", mfc="none", mec="#a6a49d",
                     mew=1.2, ms=6, label="old DEM AR=2 (SLLOD force, input $\\alpha$)")
@@ -157,6 +165,10 @@ def fig_temperatures(rows, old, outdir):
     ax.legend(fontsize=8)
     ax = axs[0, 1]
     plot_series(ax, rows, "Tstar", "Tstar_se", label=False)
+    if DSMC_SPHERES:
+        ax.plot(list(DSMC_SPHERES), [v["T"] for v in DSMC_SPHERES.values()], "x", color=INK, ms=8,
+                mew=1.8, label="Boltzmann DSMC, spheres")
+        ax.legend(fontsize=8)
     ax.set_yscale("log")
     ax.set_ylabel("$T_{tr}/(m\\dot\\gamma^2 d^2)$")
     ax = axs[1, 0]
@@ -194,18 +206,25 @@ def fig_stress_split(rows, outdir):
 
 
 def fig_collisions(rows, outdir):
-    fig, axs = plt.subplots(2, 3, figsize=(13, 7.2), sharex=True)
+    fig, axs = plt.subplots(2, 4, figsize=(17, 7.2), sharex=True)
+    for r in rows:
+        r["e_c_eff_minus"] = r.get("e_c_eff", float("nan")) - r["alpha"]
+        r["e_tr_eff_minus"] = r.get("e_tr_eff", float("nan")) - r["alpha"]
     ax = axs[0, 0]
-    plot_series(ax, rows, "e_c")
-    ax.plot([0.5, 1], [0.5, 1], color=INK, lw=1.0, ls="--", label="$e = \\alpha$")
-    ax.set_ylabel("realised restitution $e_c$ (impulse axis)")
+    plot_series(ax, rows, "e_c_eff_minus")
+    ax.axhline(0.0, color=INK, lw=1.0, ls="--")
+    ax.set_ylabel("$e_{c,eff} - \\alpha$  (contact point, energy-weighted)")
     ax.legend(fontsize=8)
     ax = axs[0, 1]
+    plot_series(ax, rows, "e_tr_eff_minus", label=False)
+    ax.axhline(0.0, color=INK, lw=1.0, ls="--")
+    ax.set_ylabel("$e_{tr,eff} - \\alpha$  (centre of mass, energy-weighted)")
+    ax = axs[0, 2]
+    plot_series(ax, rows, "frac_rehit_0.1tau", scale=100, label=False)
+    ax.set_ylabel("same pair again within 0.1 free time (%)")
+    ax = axs[0, 3]
     plot_series(ax, rows, "frac_long", scale=100, label=False)
     ax.set_ylabel("long contacts, > 5x median (%)")
-    ax = axs[0, 2]
-    plot_series(ax, rows, "frac_same_partner", scale=100, label=False)
-    ax.set_ylabel("collisions with previous partner (%)")
     ax = axs[1, 0]
     plot_series(ax, rows, "frac_multibody", scale=100, label=False)
     ax.set_ylabel("multi-body collisions (%)")
@@ -220,6 +239,9 @@ def fig_collisions(rows, outdir):
     ax.set_yscale("log")
     ax.set_ylim(5e-4, 300)
     ax.set_ylabel("contacts < 15 steps (%)  [sensor R at 1%]")
+    ax = axs[1, 3]
+    plot_series(ax, rows, "frac_same_partner", scale=100, label=False)
+    ax.set_ylabel("collision partner = previous partner (%)")
     for ax in axs[1]:
         ax.set_xlabel("$\\alpha$")
     finish(fig, os.path.join(outdir, "fig4_collisions.png"), INVALID_NOTE)
@@ -227,23 +249,68 @@ def fig_collisions(rows, outdir):
 
 def fig_structure(rows, outdir):
     for r in rows:
-        r["S_low"] = (r["S100"] + r["S010"] + r["S001"]) / 3.0
-    fig, axs = plt.subplots(1, 4, figsize=(15, 3.9), sharex=True)
+        r["S_yz"] = (r["S010"] + r["S001"]) / 2.0
+    fig, axs = plt.subplots(2, 3, figsize=(13, 7.2), sharex=True)
+    axs = axs.flat
     plot_series(axs[0], rows, "S2_nematic")
     axs[0].set_ylabel("nematic order $S_2 = 1.5\\,\\lambda_{max}(\\langle Q\\rangle)$")
     axs[0].legend(fontsize=8)
-    plot_series(axs[1], rows, "S_low", label=False)
-    axs[1].axhline(1.0, color=INK2, lw=0.8, ls=":")
-    axs[1].set_ylabel("$S(k_{min})$, mean of x,y,z modes (ideal gas ~1)")
-    plot_series(axs[2], rows, "D4", label=False)
-    axs[2].axhline(1.0, color=INK2, lw=0.8, ls=":")
-    axs[2].set_ylabel("density dispersion $D(4^3)$ (Poisson 1)")
-    plot_series(axs[3], rows, "collcount_disp", label=False)
-    axs[3].axhline(1.0, color=INK2, lw=0.8, ls=":")
-    axs[3].set_ylabel("collision-count dispersion (Poisson 1)")
-    for ax in axs:
+    for ax, key, lab in ((axs[1], "S100", "$S(k)$, box-length density mode along flow x"),
+                         (axs[2], "S_yz", "$S(k)$, box-length modes along y, z (mean)"),
+                         (axs[3], "Jx001", "$u_x$ mode along vorticity z, $J_x(001)$"),
+                         (axs[4], "D4", "density dispersion $D(4^3)$ (Poisson 1)"),
+                         (axs[5], "collcount_disp", "collision-count dispersion (Poisson 1)")):
+        plot_series(ax, rows, key, label=False)
+        ax.axhline(1.0, color=INK2, lw=0.8, ls=":")
+        ax.set_ylabel(lab)
+    for ax in axs[3:]:
         ax.set_xlabel("$\\alpha$")
-    finish(fig, os.path.join(outdir, "fig5_structure.png"), INVALID_NOTE)
+    finish(fig, os.path.join(outdir, "fig5_structure.png"),
+           "Ideal gas: S(k) = 1, J = 1. Hard-core value at phi = 0.01: S(0) ~ 0.92. Lees-Edwards box: mode 100 is "
+           "the sheared (co-moving) flow-direction wave.")
+
+
+def fig_sphere_validation(rows, outdir):
+    sph = sorted([r for r in rows if r["AR"] == 1.0], key=lambda r: r["alpha"])
+    al = [r["alpha"] for r in sph if round(r["alpha"], 3) in DSMC_SPHERES]
+    if not al:
+        return
+    ref = [DSMC_SPHERES[round(a, 3)] for a in al]
+    sp = [r for r in sph if round(r["alpha"], 3) in DSMC_SPHERES]
+    fig, axs = plt.subplots(1, 2, figsize=(12, 4.6))
+    ax = axs[0]
+    for comp, col, mk in (("xx", "#2a78d6", "o"), ("yy", "#eb6834", "s"), ("zz", "#1baf7a", "D"),
+                          ("xy", "#eda100", "^")):
+        y = [100 * (r["Pk_" + comp] - d[comp]) / abs(d[comp]) for r, d in zip(sp, ref)]
+        e = [100 * r["Pk_" + comp + "_se"] / abs(d[comp]) for r, d in zip(sp, ref)]
+        ax.errorbar(al, y, yerr=e, fmt=mk + "-", color=col, mec="white", lw=1.5, capsize=2,
+                    label=f"$P^{{k*}}_{{{comp}}}$")
+    ax.axhspan(-1, 1, color=GRID, zorder=0)
+    ax.axhline(0, color=INK, lw=1.0)
+    ax.set_ylabel("DEM kinetic stress vs DSMC (%)")
+    ax.set_xlabel("$\\alpha$")
+    ax.legend(fontsize=8, ncol=2)
+    ax.set_title("spheres: kinetic stress (DSMC has no collisional transfer)", fontsize=10)
+    ax = axs[1]
+    y = [100 * (r["Tstar"] - d["T"]) / d["T"] for r, d in zip(sp, ref)]
+    e = [100 * r["Tstar_se"] / d["T"] for r, d in zip(sp, ref)]
+    ax.errorbar(al, y, yerr=e, fmt="o-", color="#2a78d6", mec="white", lw=1.5, capsize=2,
+                label="DEM $T^*$ vs DSMC at the input $\\alpha$")
+    # expected shift if the gas experiences the energy-weighted restitution instead of alpha
+    ga = np.array(sorted(DSMC_SPHERES))
+    lnT = np.log([DSMC_SPHERES[a]["T"] for a in ga])
+    dlnT = np.gradient(lnT, ga)
+    pred = [100 * np.interp(r["alpha"], ga, dlnT) * (r.get("e_tr_eff", r["alpha"]) - r["alpha"]) for r in sp]
+    ax.plot(al, pred, "--", color=INK, lw=1.2,
+            label="expected from $e_{eff}-\\alpha$ (soft-contact obliquity)")
+    ax.axhline(0, color=INK, lw=1.0)
+    ax.set_ylabel("DEM $T^*$ vs DSMC (%)")
+    ax.set_xlabel("$\\alpha$")
+    ax.legend(fontsize=8)
+    ax.set_title("spheres: temperature", fontsize=10)
+    finish(fig, os.path.join(outdir, "fig7_sphere_validation.png"),
+           "DSMC: Boltzmann, phi -> 0, time step extrapolated to 0 (reference/dsmc_spheres_usf.txt). "
+           "Grey band: +-1%. Error bars: DEM block standard errors.")
 
 
 def fig_timeseries(case, root, outdir):
@@ -279,6 +346,7 @@ def main():
     ap.add_argument("root", nargs="?", default=here)
     ap.add_argument("--old", default=os.path.join(here, "..", "USF"))
     ap.add_argument("--nblocks", type=int, default=10)
+    ap.add_argument("--ts", nargs="+", default=["AR2/a0.70"], help="cases for time-series figures")
     a = ap.parse_args()
     outdir = os.path.join(a.root, "analysis")
     os.makedirs(outdir, exist_ok=True)
@@ -295,16 +363,19 @@ def main():
         print("no finished cases under", a.root)
         return
     print(f"{len(rows)} finished cases ({sum(r['valid'] for r in rows)} well resolved)")
+    global INVALID_NOTE
+    if all(r["valid"] for r in rows):
+        INVALID_NOTE = None
     old = old_dem(a.old) if os.path.isdir(a.old) else {}
     fig_reduced_stress(rows, old, outdir)
     fig_temperatures(rows, old, outdir)
     fig_stress_split(rows, outdir)
     fig_collisions(rows, outdir)
     fig_structure(rows, outdir)
-    for r in rows:
-        if r["valid"] and abs(r["alpha"] - 0.7) < 1e-6:
-            fig_timeseries(os.path.join(a.root, r["case"]), a.root, outdir)
-            break
+    fig_sphere_validation(rows, outdir)
+    for c in a.ts:
+        if os.path.exists(os.path.join(a.root, c, "prod.stress")):
+            fig_timeseries(os.path.join(a.root, c), a.root, outdir)
 
 
 if __name__ == "__main__":

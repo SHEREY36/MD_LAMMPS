@@ -1,8 +1,11 @@
 """Homogeneous DSMC for dilute inelastic hard spheres in USF (Boltzmann limit).
 Peculiar-frame free streaming: dc_x/dt = -k*a*c_y (k=1 physical, k=2 = what the
-LAMMPS addforce produces). Units: sigma=1, m=1, a=1. n chosen to match phi=0.01."""
+LAMMPS addforce produces). Units: sigma=1, m=1, a=1. n chosen to match phi=0.01.
+Time-step error is first order in nu*dt (collisions per particle per step): dt=0.01
+underestimates |P_xy| by 0.4% (alpha=0.5) to 3% (alpha=0.95) and T by up to 2%.
+dt=0.0025 is within ~0.3%; runs/fresh_usf/reference/dsmc_spheres_usf.txt is extrapolated to dt=0."""
 import numpy as np, sys
-def run(alpha, k=1.0, N=40000, phi=0.01, a=1.0, dt=0.01, tmax=120.0, seed=1, T0=200.0):
+def run(alpha, k=1.0, N=40000, phi=0.01, a=1.0, dt=0.0025, tmax=120.0, seed=1, T0=200.0):
     rng = np.random.default_rng(seed)
     n = 6*phi/np.pi                      # number density for sigma=1
     c = rng.normal(0, np.sqrt(T0), (N, 3)); c -= c.mean(0)

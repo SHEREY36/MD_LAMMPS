@@ -70,6 +70,14 @@ cd runs/sphcyl
 - dt recalibration must use the MEDIAN contact time (f_diag[23]), never the mean:
   at low alpha ~7% rotation-driven contacts last >5x longer and inflate the mean
   (the first AR2 pilot at alpha<=0.65 ran with 90% under-resolved contacts).
+- Comparing with Boltzmann DSMC: use the KINETIC stress (Pk_* in summary.csv); the
+  collisional part is 3-5% of p at phi=0.01 and standard DSMC has none. The reference
+  DSMC (runs/regression/v2/dsmc_usf_spheres.py) has O(nu*dt) time-step error: dt=0.01
+  gave |P_xy| 3% low at alpha=0.95; runs/fresh_usf/reference/dsmc_spheres_usf.txt is
+  extrapolated to dt=0 (sphere DEM matches it to <1%).
+- Realised restitution != input alpha: spheres e_eff is 1.6% low at alpha=0.5 (finite-
+  stiffness obliquity, ~delta/d * tan^2 theta), explains T* 2% low; rods e_c,eff > alpha
+  (up to +0.11). Use e_tr_eff / e_c_eff (summary.csv, energy-weighted) when matching DSMC.
 - Git: the original .gitignore rule `dump.*` hid src/dump.cpp/.h and `Makefile`
   hid src/Makefile (both fixed). Commit with explicit paths, never `git add -A`
   (runs/ holds GB of outputs). Cluster workflow: runs/fresh_usf/negishi/README.md.

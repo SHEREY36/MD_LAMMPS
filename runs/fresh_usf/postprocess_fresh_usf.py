@@ -116,6 +116,32 @@ def summarise(case, nb):
     for ab in ("xx", "yy", "zz", "xy"):
         rows["fabric_" + ab] = wavg("nn_" + ab)
 
+    # per-collision records (all collisions of a sampled subset of pairs)
+    #   e_*_eff: energy-weighted restitution sqrt(sum g_post^2 / sum g_pre^2) -- the value that
+    #            sets the dissipation (the per-collision mean e_c/e_tr weights grazing hits equally)
+    #   frac_rehit_*: same pair collides again within 0.01 / 0.1 mean free times (rotation-driven
+    #            multiple impacts of one encounter for rods; DSMC treats an encounter as one event)
+    evf = os.path.join(case, "prod.events")
+    if os.path.exists(evf) and os.path.getsize(evf) > 0:
+        ev = load(evf)
+        ce = cols(evf)
+        gpre, gpost = np.abs(ev[:, ce["g_n_pre"]]), np.abs(ev[:, ce["g_n_post"]])
+        cpre, cpost = np.abs(ev[:, ce["gc_n_pre"]]), np.abs(ev[:, ce["gc_n_post"]])
+        rows["e_tr_eff"] = float(np.sqrt((gpost**2).sum() / (gpre**2).sum()))
+        rows["e_c_eff"] = float(np.sqrt((cpost**2).sum() / (cpre**2).sum()))
+        dts = [float(x.split("dt=")[1].split()[0]) for x in recal(case)]
+        tau = 1.0 / (rows["nu_over_gdot"] * gd)
+        if dts and np.isfinite(tau):
+            t_end = ev[:, ce["time_end"]]
+            t_beg = t_end - ev[:, ce["dur_steps"]] * dts[-1]
+            ti, tj = ev[:, ce["tag_i"]], ev[:, ce["tag_j"]]
+            key = np.minimum(ti, tj) * 1.0e7 + np.maximum(ti, tj)
+            o = np.lexsort((t_end, key))
+            same = key[o][1:] == key[o][:-1]
+            gap = (t_beg[o][1:] - t_end[o][:-1])[same] / tau
+            rows["frac_rehit_0.01tau"] = float((gap < 0.01).sum() / len(ev))
+            rows["frac_rehit_0.1tau"] = float((gap < 0.1).sum() / len(ev))
+
     # structure / clustering / orientation
     sr = load(os.path.join(case, "prod.struct"))
     cs = cols(os.path.join(case, "prod.struct"))
@@ -159,8 +185,12 @@ def summarise(case, nb):
         notes.append(f"sensor flags (letter+count of windows): {rows['flags']} of {len(se)} windows")
     if abs(rows["drift_T"]) > 0.03:
         notes.append(f"T differs by {100 * rows['drift_T']:.1f}% between production halves (not stationary?)")
-    if rows["S010"] > 2 or rows["S001"] > 2 or rows["D4"] > 1.3:
-        notes.append(f"density inhomogeneity: S010={rows['S010']:.2f} S001={rows['S001']:.2f} D4={rows['D4']:.2f}")
+    if max(rows["S100"], rows["S010"], rows["S001"]) > 1.5 or rows["D4"] > 1.1:
+        notes.append(f"density inhomogeneity: S100={rows['S100']:.2f} S010={rows['S010']:.2f} "
+                     f"S001={rows['S001']:.2f} D4={rows['D4']:.2f} Jx001={rows['Jx001']:.2f}")
+    if rows.get("frac_rehit_0.1tau", 0) > 0.02:
+        notes.append(f"{100 * rows['frac_rehit_0.1tau']:.1f}% of collisions repeat the same pair within 0.1 "
+                     f"mean free time (multiple impacts of one encounter)")
     if rows["frac_multibody"] > 0.02:
         notes.append(f"{100 * rows['frac_multibody']:.1f}% multi-body collisions (DSMC is strictly binary)")
     if rows["frac_long"] > 0.01:
