@@ -22,6 +22,8 @@ for st in hertz hooke; do for a in 0.5 0.7 0.9; do
   $SERIAL $LMP -in in.t3_binary -var style $st -var alpha $a -log log.t3_${st}_$a -screen none
 done; done
 $SERIAL $LMP -in in.t3b_rods -log log.t3b -screen none
+# T7 must stop with an ERROR (rot_sllod was removed); check_regression.py looks for it in log.t7
+echo "T7: the mpirun 'non-zero exit code / job aborted' message that follows is EXPECTED"
 $SERIAL $LMP -in in.t7_rot_sllod -log log.t7 -screen none
 $MPIRUN -np 2 $LMP -in in.t5_elastic_usf -log log.t5 -screen none
 $SERIAL $LMP -in in.t8_decomp -var np 1 -log log.t8_np1 -screen none

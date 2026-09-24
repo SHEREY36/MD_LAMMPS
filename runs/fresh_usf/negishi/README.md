@@ -15,8 +15,11 @@ Cases are small (1,250–5,000 particles in a 64 d box). Four ranks is the effic
 The scripts need only numpy and matplotlib. Any environment that has them works; your DSMC_V2 environment (made by `hpc/setup_negishi_env.sh`, at `<DSMC_V2 repo>/.conda-v2`) already does. Call its python by full path, so `module purge` in `modules.sh` can't unset it:
 
 ```bash
-export PYTHON=/path/to/DSMC_V2/.conda-v2/bin/python     # put this in ~/.bashrc if you like
+find /scratch/negishi/$USER $HOME -maxdepth 4 -type d -name .conda-v2 2>/dev/null   # where is it?
+export PYTHON=/scratch/negishi/$USER/DSMC_V2/.conda-v2/bin/python   # <- use the path find printed + /bin/python
+$PYTHON -c "import numpy, matplotlib; print('python ok')"          # must print: python ok
 ```
+If `$PYTHON` is empty, a command like `$PYTHON check_regression.py` fails with `check_regression.py: command not found`, because the shell tries to run the script itself. Check with `echo $PYTHON`.
 
 Without such an environment, `module load conda` and create one with `numpy matplotlib`. RCAC's current module is `conda`; `anaconda` is the older name.
 
@@ -47,7 +50,7 @@ LMP=../../fresh_usf/bin/lmp_mpi ./run_regression.sh quick
 $PYTHON check_regression.py
 exit                                              # leave the interactive node
 ```
-Expect `20/20 checks passed (not run, skipped: T4, T6)` in quick mode and 33/33 in full mode. T6 is a sphere run through the production template, compared against DSMC.
+T7 checks that a removed option stops LAMMPS with an error, so mpirun's `job has been aborted` message during T7 is expected. Expect `20/20 checks passed (not run, skipped: T4, T6)` in quick mode and 33/33 in full mode. T6 is a sphere run through the production template, compared against DSMC.
 
 **Never start `lmp_mpi` bare inside `sinteractive`**: always use `mpirun -np N` (or `srun` in batch jobs). An interactive session is itself an `srun` step. A bare MPI binary joins that step's PMI and dies in `MPI_Init` with `srun: error: PMK_KVS_Barrier duplicate request from task 0`, or hangs. Batch jobs are not affected: `job_case.sbatch` launches through `srun`.
 
