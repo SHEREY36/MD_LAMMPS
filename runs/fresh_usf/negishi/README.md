@@ -10,11 +10,24 @@ There are two ways to run:
 
 Cases are small (1,250–5,000 particles in a 64 d box). Four ranks is the efficient choice; 8 ranks only helps the largest or longest cases.
 
-## 1. Get the code (once)
+## 0. Python
+
+The scripts need only numpy and matplotlib. Any environment that has them works; your DSMC_V2 environment (made by `hpc/setup_negishi_env.sh`, at `<DSMC_V2 repo>/.conda-v2`) already does. Call its python by full path, so `module purge` in `modules.sh` can't unset it:
+
+```bash
+export PYTHON=/path/to/DSMC_V2/.conda-v2/bin/python     # put this in ~/.bashrc if you like
+```
+
+Without such an environment, `module load conda` and create one with `numpy matplotlib`. RCAC's current module is `conda`; `anaconda` is the older name.
+
+## 1. Get the code and build (once)
+
+Build and test on a compute node:
 
 ```bash
 cd /scratch/negishi/$USER                 # run from scratch, not $HOME
 git clone https://github.com/SHEREY36/MD_LAMMPS.git && cd MD_LAMMPS
+sinteractive -A morri353 -p cpu -n 16 -t 2:00:00
 bash runs/fresh_usf/negishi/build_lammps.sh
 ```
 
@@ -26,19 +39,23 @@ bash runs/fresh_usf/negishi/build_lammps.sh
 
 If `module load gcc openmpi` doesn't match Negishi's module names, edit `modules.sh` once (`module avail openmpi`). Both the build and the jobs read it.
 
-Optional but recommended: run the regression suite in an interactive job before production.
+Then run the regression suite in the same interactive session (the quick mode takes about 4 min; the full mode adds T4 and the 30–60 min T6):
 ```bash
-sinteractive -A morri353 -p cpu -n 4 -t 2:00:00
-cd runs/regression/v2 && LMP=../../fresh_usf/bin/lmp_mpi ./run_regression.sh && python3 check_regression.py
+source runs/fresh_usf/negishi/modules.sh          # the build loaded them only inside its own shell
+cd runs/regression/v2
+LMP=../../fresh_usf/bin/lmp_mpi ./run_regression.sh quick
+$PYTHON check_regression.py
+exit                                              # leave the interactive node
 ```
-Expect 33/33 PASS. T6 is a sphere run through the production template, compared against DSMC.
+Expect `20/20 checks passed (not run, skipped: T4, T6)` in quick mode and 33/33 in full mode. T6 is a sphere run through the production template, compared against DSMC.
+
+**Never start `lmp_mpi` bare inside `sinteractive`**: always use `mpirun -np N` (or `srun` in batch jobs). An interactive session is itself an `srun` step. A bare MPI binary joins that step's PMI and dies in `MPI_Init` with `srun: error: PMK_KVS_Barrier duplicate request from task 0`, or hangs. Batch jobs are not affected: `job_case.sbatch` launches through `srun`.
 
 ## 2. Generate the cases and job lists
 
 ```bash
-module load anaconda            # any python3 with numpy
-cd runs/fresh_usf/negishi
-python3 prepare_cases.py        # all 50 cases (AR 2, 1.5, 2.5, 3, 1 × α 0.50–0.95)
+cd /scratch/negishi/$USER/MD_LAMMPS/runs/fresh_usf/negishi
+$PYTHON prepare_cases.py        # all 50 cases (AR 2, 1.5, 2.5, 3, 1 × α 0.50–0.95)
 ```
 
 The data files use fixed seeds, so they are identical to the local ones. `jobs/cost_table.txt` lists predicted steps, ranks, wall time and core-hours per case. With the defaults (`--max-wall 4 --cores 256`) the whole set is about 560 core-hours and needs 236 cores at once. Every case is predicted to finish in 4 h or less (long cases get 8 or 16 ranks), and time limits are 2× the prediction.
@@ -58,12 +75,14 @@ bash status.sh                   # stage / blocks done / production sensor flags
 
 Each array task runs one case directory (`../AR*/a*/`), skips cases already DONE, and logs to `logs/`. A killed or timed-out case restarts from the beginning on resubmission. Time limits are 2× the prediction, so timeouts should be rare.
 
-Check the first finished jobs: compare `Loop time` in `log.lammps` with `jobs/cost_table.txt`. If Negishi is faster or slower than predicted, rerun `prepare_cases.py --estimate-only --rate <atom-steps/s/rank>` before submitting the rest.
+Check the first finished jobs: compare `Loop time` in `log.lammps` with `jobs/cost_table.txt`. If Negishi is faster or slower than predicted, rerun `$PYTHON prepare_cases.py --estimate-only --rate <atom-steps/s/rank>` before submitting the rest.
 
 ## 4. Analyse
 
 ```bash
-cd runs/fresh_usf && python3 postprocess_fresh_usf.py     # summary.csv + diagnostics_report.txt
+cd runs/fresh_usf
+$PYTHON postprocess_fresh_usf.py     # summary.csv + diagnostics_report.txt
+$PYTHON plot_fresh_usf.py            # analysis/fig*.png
 ```
 
 Copy back only what you need, e.g. `rsync -av --include='*/' --include='prod.*' --include='prof_*.dat' --include='rdf.dat' --include='params.in' --include='log.lammps' --exclude='*' negishi:.../runs/fresh_usf/ ./`. Snapshots and restart files are large.

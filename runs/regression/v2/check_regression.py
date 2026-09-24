@@ -17,8 +17,20 @@ os.chdir(HERE)
 results = []
 
 
+skipped = []
+
+
 def check(name, ok, detail):
     results.append((name, bool(ok), detail))
+
+
+def failed(name, ex, optional=False):
+    """An exception in a test block is a FAIL, except for the long tests that
+    'run_regression.sh quick' does not run (T4, T6): missing outputs -> SKIP."""
+    if optional and isinstance(ex, FileNotFoundError):
+        skipped.append(name)
+    else:
+        check(name, False, f"error: {ex}")
 
 
 def load(fn):
@@ -55,7 +67,7 @@ try:
     check("T1 free flight: energy bookkeeping dE = W_shear", np.abs(e[:, c["resid_rel"]]).max() < 1e-3,
           f"max |resid_rel| = {np.abs(e[:, c['resid_rel']]).max():.2e}")
 except Exception as ex:
-    check("T1", False, f"error: {ex}")
+    failed("T1", ex)
 
 # ---------------------------------------------------------------- T2
 try:
@@ -71,7 +83,7 @@ try:
     check("T2 fix spherocyl/diag 9-component collisional stress", ok,
           f"Cxy={st[0, c['Cxy']]:.6e} Cyx={st[0, c['Cyx']]:.2e} Cyy={st[0, c['Cyy']]:.6e}")
 except Exception as ex:
-    check("T2", False, f"error: {ex}")
+    failed("T2", ex)
 
 # ---------------------------------------------------------------- T3
 for style, tol in (("hertz", 0.004), ("hooke", 0.025)):
@@ -88,7 +100,7 @@ for style, tol in (("hertz", 0.004), ("hooke", 0.025)):
                   f"e={r[c['e_c']]:.4f} (tol {tol*100:.1f}%), {r[c['dur_mean_steps']]:.0f} steps/contact, "
                   f"energy resid {en[ce['resid_rel']]:.1e}")
         except Exception as ex:
-            check(f"T3 {style} {a}", False, f"error: {ex}")
+            failed(f"T3 {style} {a}", ex)
 
 # ---------------------------------------------------------------- T3b
 try:
@@ -105,7 +117,7 @@ try:
     check("T3b energy bookkeeping (rotation included)", abs(en[ce["resid_rel"]]) < 0.005,
           f"resid_rel={en[ce['resid_rel']]:.2e}")
 except Exception as ex:
-    check("T3b", False, f"error: {ex}")
+    failed("T3b", ex)
 
 # ---------------------------------------------------------------- T4
 try:
@@ -122,7 +134,7 @@ try:
     check("T4 elastic rods: total energy conserved", drift < 1e-3 and np.abs(en[:, ce["dPc_x"]:ce["dPc_z"] + 1]).max() < 1e-6,
           f"relative energy drift {drift:.1e} over {len(E)} windows, max dPc {np.abs(en[:, ce['dPc_x']:ce['dPc_z']+1]).max():.1e}")
 except Exception as ex:
-    check("T4", False, f"error: {ex}")
+    failed("T4", ex, optional=True)
 
 # ---------------------------------------------------------------- T5
 try:
@@ -135,7 +147,7 @@ try:
           np.abs(en[:, ce["dPc_x"]:ce["dPc_z"] + 1]).max() < 1e-6,
           f"max |dPc| = {np.abs(en[:, ce['dPc_x']:ce['dPc_z'] + 1]).max():.1e}")
 except Exception as ex:
-    check("T5", False, f"error: {ex}")
+    failed("T5", ex)
 
 # ---------------------------------------------------------------- T6
 try:
@@ -183,14 +195,14 @@ try:
     check("T6 sphere USF: energy bookkeeping residual", np.abs(er[:, ce["resid_rel"]]).max() < 0.01,
           f"max |resid_rel| = {np.abs(er[:, ce['resid_rel']]).max():.1e}")
 except Exception as ex:
-    check("T6", False, f"error: {ex}")
+    failed("T6", ex, optional=True)
 
 # ---------------------------------------------------------------- T7
 try:
     log = open("log.t7").read()
     check("T7 rot_sllod option removed (hard error)", "rot_sllod option has been removed" in log, "")
 except Exception as ex:
-    check("T7", False, f"error: {ex}")
+    failed("T7", ex)
 
 # ---------------------------------------------------------------- T8
 try:
@@ -204,7 +216,7 @@ try:
     check("T8 1 vs 4 MPI ranks give the same physics", rel < 1e-6 and same_n,
           f"max relative stress difference {rel:.1e}; collision counts identical: {same_n}")
 except Exception as ex:
-    check("T8", False, f"error: {ex}")
+    failed("T8", ex)
 
 # ---------------------------------------------------------------- T9
 try:
@@ -218,7 +230,7 @@ try:
     check("T9 energy bookkeeping through flips", np.abs(en[:, ce["resid_rel"]]).max() < 0.01,
           f"max |resid_rel| = {np.abs(en[:, ce['resid_rel']]).max():.1e}")
 except Exception as ex:
-    check("T9", False, f"error: {ex}")
+    failed("T9", ex)
 
 # ---------------------------------------------------------------- report
 w = max(len(r[0]) for r in results)
@@ -226,7 +238,8 @@ lines = []
 for name, ok, detail in results:
     lines.append(f"{'PASS' if ok else 'FAIL'}  {name:<{w}}  {detail}")
 npass = sum(r[1] for r in results)
-lines.append(f"\n{npass}/{len(results)} checks passed")
+lines.append(f"\n{npass}/{len(results)} checks passed"
+             + (f"  (not run, skipped: {', '.join(skipped)})" if skipped else ""))
 report = "\n".join(lines)
 print(report)
 open("regression_report.txt", "w").write(report + "\n")

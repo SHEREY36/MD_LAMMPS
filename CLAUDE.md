@@ -63,6 +63,9 @@ cd runs/sphcyl
   `beyond_contact = 1`, otherwise every contact in progress at a neighbor rebuild
   loses its history (touch flag, shear spring, collision record).
 - Run with `lmp -in in.usf` (not `<`) when the input uses jump/label.
+- Negishi: never start `lmp_mpi` bare inside `sinteractive` (itself an srun step):
+  MPI_Init joins the step's PMI -> `srun: error: PMK_KVS_Barrier duplicate request`
+  or a hang. Use `mpirun -np N` interactively, `srun` in batch jobs.
 - LAMMPS variables have no two-argument max()/min(); use ternary().
 - dt recalibration must use the MEDIAN contact time (f_diag[23]), never the mean:
   at low alpha ~7% rotation-driven contacts last >5x longer and inflate the mean

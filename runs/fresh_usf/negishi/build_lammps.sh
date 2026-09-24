@@ -13,9 +13,12 @@ make yes-granular yes-asphere       # copies src/GRANULAR/*.cpp,*.h (incl. spher
 make -j 16 mpi
 mkdir -p "$REPO/runs/fresh_usf/bin"
 cp lmp_mpi "$REPO/runs/fresh_usf/bin/lmp_mpi"
-"$REPO/runs/fresh_usf/bin/lmp_mpi" -h | grep -E "spherocyl|MPI v" | head -5
+# Launch through mpirun even for 1 rank: started bare inside sinteractive (an srun
+# step), MPI_Init joins that step's PMI and fails/hangs
+# ("srun: error: PMK_KVS_Barrier duplicate request from task 0").
+mpirun -np 1 "$REPO/runs/fresh_usf/bin/lmp_mpi" -h | grep -E "spherocyl|MPI v" | head -5
 # 10-second functional check: single-contact virial must use the centre-of-mass branch
 cd "$REPO/runs/regression/v2"
-"$REPO/runs/fresh_usf/bin/lmp_mpi" -in in.t2_virial -log log.t2 -screen none
+mpirun -np 1 "$REPO/runs/fresh_usf/bin/lmp_mpi" -in in.t2_virial -log log.t2 -screen none
 grep "T2 LAMMPS virial" log.t2
 echo "expected: Pxy=0.001185854123 Pyy=0.003557562368"
