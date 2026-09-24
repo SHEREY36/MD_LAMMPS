@@ -4,7 +4,8 @@
 #   ./run_regression.sh quick     skip T4 and T6
 # Then: python3 check_regression.py
 #   LMP=<binary>      default ../../bin/lmp_mpi (local); on Negishi ../../fresh_usf/bin/lmp_mpi
-#   MPIRUN=<launcher> default "mpirun --oversubscribe" (use "srun" inside a SLURM job)
+#   MPIRUN=<launcher> default "mpirun --oversubscribe" (also right inside sinteractive;
+#                     the script passes -np N, so plain srun does not work here)
 cd "$(dirname "$0")"
 LMP=$(readlink -f "${LMP:-../../bin/lmp_mpi}")
 MPIRUN=${MPIRUN:-"mpirun --oversubscribe"}
