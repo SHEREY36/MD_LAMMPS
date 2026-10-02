@@ -21,9 +21,15 @@ gave a realised restitution of 0.54 for a nominal 0.50) and must not be used.
 
 Default sweep (`generate_fresh_hcs.py`): AR 1.1, 1.5, 2, 2.5, 3 × α 0.50–0.95
 (step 0.05) plus 0.88 and 0.96, and AR 1.25 at 0.88/0.90/0.96, for the literature
-check against Rubio-Largo et al. (Physica A 443, 477, 2016). Two seeds per case:
-126 runs, N ≈ 1400–2900 rods in a 64 d box, 25 contacts per particle each.
-Cost: about 3.5 min on 4 ranks per run on the workstation (≈ 30 core-hours in all).
+check against Rubio-Largo et al. (Physica A 443, 477, 2016). Two seeds per case,
+126 runs, N ≈ 1400–4400 rods in a 64 d box:
+
+* `cases_main.txt` (96 runs, AR ≥ 1.5): 25 contacts per particle, about 3.5 min on
+  4 ranks on the workstation, 2–3 min on Negishi;
+* `cases_near_sphere.txt` (30 runs, AR ≤ 1.25): translation–rotation exchange
+  needs about 20 encounters near the sphere, so θ settles only after ~50–100
+  contacts per particle; these run 40 blocks (100 contacts), about 40 min on
+  4 Negishi ranks.
 
 ## Outputs of one case
 
@@ -58,7 +64,7 @@ cd runs/fresh_hcs
 export PYTHON=/scratch/negishi/$USER/DSMC_V2/.conda-v2/bin/python   # any python with numpy
 mkdir -p bin && cp ../fresh_usf/bin/lmp_mpi bin/                     # the frozen fresh_usf binary
 $PYTHON generate_fresh_hcs.py                                       # 126 cases, cases.txt
-bash negishi/jobs/submit_all.sh                                     # one array, 4 ranks/case, 45 min limit
+bash negishi/jobs/submit_all.sh                                     # two arrays (main 45 min, near-sphere 3 h), 4 ranks/case
 squeue -u $USER
 # when finished:
 $PYTHON postprocess_fresh_hcs.py

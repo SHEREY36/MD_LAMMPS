@@ -50,8 +50,9 @@ def nu_guess(AR, T, phi, rho, d=1.0):
 
 
 def default_cases():
+    """Elongated rods first; the slowly exchanging near-spheres (long runs) last."""
     cases = []
-    for AR in (1.1, 1.5, 2.0, 2.5, 3.0):
+    for AR in (2.0, 1.5, 2.5, 3.0, 1.1):
         for a in sorted(set(CORE_ALPHAS + RL_ALPHAS), reverse=True):
             cases.append((AR, a))
     for a in RL_ALPHAS:
@@ -80,6 +81,10 @@ def main():
     ap.add_argument("--tau_block", type=float, default=2.5,
                     help="contacts per particle per cooling block (stiffness rescaled between blocks)")
     ap.add_argument("--nblocks", type=int, default=10)
+    ap.add_argument("--nblocks_near_sphere", type=int, default=40,
+                    help="blocks for AR <= near_sphere_AR: translation-rotation exchange "
+                         "takes ~20 encounters there, so theta needs ~100 contacts/particle")
+    ap.add_argument("--near_sphere_AR", type=float, default=1.3)
     ap.add_argument("--tau_window", type=float, default=0.05,
                     help="contacts per particle per diagnostic window")
     ap.add_argument("--tau_snapshot", type=float, default=0.5,
@@ -110,6 +115,7 @@ def main():
             cdir = os.path.join(args.outdir, f"AR{AR:g}", f"a{alpha:.2f}", f"s{s}")
             os.makedirs(cdir, exist_ok=True)
             nug = nu_guess(AR, args.T0, args.phi, args.rho)
+            nblocks = args.nblocks_near_sphere if AR <= args.near_sphere_AR else args.nblocks
             # deterministic, distinct seed per (AR, alpha, replica)
             seed = args.seed_base + int(round(100 * AR)) * 10000 + int(round(100 * alpha)) * 10 + s
             cmd = [sys.executable, gen, "--AR", str(AR), "--phi", str(args.phi),
@@ -132,7 +138,7 @@ variable        equil_collisions equal {args.equil_collisions}
 variable        delta_target     equal {args.delta_target}
 variable        Nc_target        equal {args.Nc_target}
 variable        tau_block        equal {args.tau_block}
-variable        nblocks          equal {args.nblocks}
+variable        nblocks          equal {nblocks}
 variable        tau_window       equal {args.tau_window}
 variable        tau_snapshot     equal {args.tau_snapshot}
 variable        log_fraction     equal {args.log_fraction}
@@ -147,18 +153,23 @@ variable        datafile         string spherocyl.data
                 f.write("# cooling blocks (explicit; no jump/label needed).\n")
                 f.write("# Between blocks kn ~ T_tr and dt ~ T_tr^-1/2 (harden.in) keep the\n")
                 f.write("# mean overlap and the steps per contact at their calibrated values.\n")
-                for b in range(1, args.nblocks + 1):
-                    f.write(f"print           \"COOLING BLOCK {b}/{args.nblocks} start\"\n")
+                for b in range(1, nblocks + 1):
+                    f.write(f"print           \"COOLING BLOCK {b}/{nblocks} start\"\n")
                     f.write("run             ${steps_block}\n")
-                    if b < args.nblocks:
+                    if b < nblocks:
                         f.write("include         harden.in\n")
-                    f.write(f"print           \"COOLING BLOCK {b}/{args.nblocks} done\"\n")
+                    f.write(f"print           \"COOLING BLOCK {b}/{nblocks} done\"\n")
             rel = os.path.relpath(cdir, args.outdir)
             cases.append(rel)
-            print(f"{rel:18s} nu_guess={nug:8.4g}  seed={seed}")
+            print(f"{rel:18s} nu_guess={nug:8.4g}  seed={seed}  blocks={nblocks}")
 
     with open(os.path.join(args.outdir, "cases.txt"), "w") as f:
         f.write("\n".join(cases) + "\n")
+    near = [c for c in cases if float(c.split("/")[0][2:]) <= args.near_sphere_AR]
+    with open(os.path.join(args.outdir, "cases_main.txt"), "w") as f:
+        f.write("".join(c + "\n" for c in cases if c not in near))
+    with open(os.path.join(args.outdir, "cases_near_sphere.txt"), "w") as f:
+        f.write("".join(c + "\n" for c in near))
 
     lmp = os.path.abspath(args.lmp)
     with open(os.path.join(args.outdir, "run_local_queue.sh"), "w") as f:

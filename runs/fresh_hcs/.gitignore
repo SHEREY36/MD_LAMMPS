@@ -1,7 +1,7 @@
 # generated case directories and run products (regenerate with generate_fresh_hcs.py)
 AR*/
 bench/AR*/
-cases.txt
+cases*.txt
 run_local_queue.sh
 queue.log
 negishi/logs/
