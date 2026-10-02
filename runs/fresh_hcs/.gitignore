@@ -1,0 +1,10 @@
+# generated case directories and run products (regenerate with generate_fresh_hcs.py)
+AR*/
+bench/AR*/
+cases.txt
+run_local_queue.sh
+queue.log
+negishi/logs/
+analysis/hcs_timeseries/
+*.lammpstrj.gz
+__pycache__/

@@ -1,0 +1,126 @@
+# ======================================================================
+# Homogeneous cooling state (HCS) of smooth, inelastic spherocylinders
+# (dilute DEM, corrected code of runs/fresh_usf; see runs/fresh_hcs/README.md)
+#
+# Physics:
+#   * Hertz normal law  F = kn d^1.5 + eta d^0.25 v_n, with the damping exact
+#     for the restitution alpha:  eta = sqrt(5) sqrt(kn m*) |ln a| / sqrt(pi^2+ln^2 a)
+#   * contact history kept across neighbour rebuilds (pair style beyond_contact)
+#   * hard-particle limit: kn and dt calibrated from measured overlaps and
+#     contact times at T0, then rescaled with the cooling gas (Hertz scaling
+#     kn ~ T_tr, dt ~ T_tr^-1/2: constant overlap/d and steps per contact)
+#
+# Stages: A elastic equilibration (energy-conservation check, calibration)
+#         -> exact rescale to T_tr = T_rot = T0 -> B cooling (nblocks blocks).
+# Clock: time 0 is the start of cooling; collisions = contacts, counted by
+# fix spherocyl/diag (hcs.coll: nu = 2 N_start/(N t_win)).
+#
+# All case parameters come from params.in (written by generate_fresh_hcs.py).
+# Run with:  mpirun -np 4 lmp_mpi -in in.hcs       (-in, not <)
+# ======================================================================
+
+units           lj
+dimension       3
+atom_style      ellipsoid
+atom_modify     map array
+boundary        p p p
+newton          off
+comm_modify     vel yes
+
+include         params.in
+
+# ---------------------------------------------------------------- geometry
+variable        R      equal 0.5*${d}
+variable        Lcyl   equal (${AR}-1.0)*${d}
+variable        H      equal 0.5*${Lcyl}
+variable        Vp     equal (4.0/3.0)*PI*${R}^3+PI*${R}^2*${Lcyl}
+variable        m      equal ${rho_p}*${Vp}
+variable        meff   equal 0.5*${m}
+variable        Iperp  equal (PI/48.0)*${rho_p}*${d}^2*${Lcyl}^3+(PI/24.0)*${rho_p}*${d}^3*${Lcyl}^2+(3.0*PI/64.0)*${rho_p}*${d}^4*${Lcyl}+(PI/60.0)*${rho_p}*${d}^5
+variable        lne    equal abs(ln(${alpha}))
+
+# -------------------------------------------------- initial stiffness / dt
+# Hertz head-on: delta_max = (5 m* g^2/(4 kn))^(2/5), t_c = 2.94 delta_max/g.
+# g_ref = 2.26 sqrt(T/m) = collision-weighted mean normal speed (Maxwellian).
+variable        gref   equal 2.26*sqrt(${T0}/${m})
+variable        kn     equal 5.0*${meff}*${gref}^2/(4.0*(${delta_target}*${d})^2.5)
+variable        tcref  equal 2.94*${delta_target}*${d}/${gref}
+variable        dtrun  equal ${tcref}/${Nc_target}
+variable        eta    equal sqrt(5.0)*sqrt(${kn}*${meff})*${lne}/sqrt(PI*PI+${lne}*${lne})
+
+print "================================================================"
+print "FRESH HCS  AR=${AR}  alpha=${alpha}  phi=${phi}  T0=${T0}"
+print "R=${R} H=${H} m=${m} Iperp=${Iperp}"
+print "kn0=${kn}  eta0=${eta}  dt0=${dtrun}"
+print "================================================================"
+
+# ------------------------------------------------------------------ state
+read_data       ${datafile}
+set             type 1 mass ${m}
+variable        N  equal count(all)
+
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 0.0 0.0 0.0 1
+pair_coeff      * * ${R} ${H}
+neighbor        ${skin} bin
+neigh_modify    delay 0 every 1 check yes one 200 page 20000
+fix             int all nve/spherocyl
+timestep        ${dtrun}
+
+# instantaneous modal temperatures (smooth rod: two rotational DOF)
+compute         ke   all ke
+compute         q    all property/atom quatw quati quatj quatk
+compute         am   all property/atom angmomx angmomy angmomz
+variable        ux   atom 2.0*(c_q[2]*c_q[4]+c_q[1]*c_q[3])
+variable        uy   atom 2.0*(c_q[3]*c_q[4]-c_q[1]*c_q[2])
+variable        uz   atom 1.0-2.0*(c_q[2]*c_q[2]+c_q[3]*c_q[3])
+variable        Lpar atom c_am[1]*v_ux+c_am[2]*v_uy+c_am[3]*v_uz
+variable        erot atom (c_am[1]^2+c_am[2]^2+c_am[3]^2-v_Lpar^2)/(2.0*${Iperp})
+compute         Krot all reduce sum v_erot
+variable        Ttr  equal 2.0*c_ke/(3.0*v_N)
+variable        Trot equal c_Krot/v_N
+variable        t    equal time
+
+# ========================================== A: elastic equilibration
+# (energy must be conserved: diag_equil.energy resid ~ 0, W_nc = 0)
+variable        tA      equal ${equil_collisions}/${nu_guess}
+variable        nwinA   equal round(v_tA/(20.0*${dtrun}))
+variable        stepsA  equal 20*${nwinA}
+fix             diag all spherocyl/diag ${nwinA} diag_equil sample $(round(v_nwinA/10)+1)
+thermo          ${nwinA}
+thermo_style    custom step time v_Ttr v_Trot f_diag[3] f_diag[4] f_diag[10]
+print           "STAGE A: elastic equilibration ${stepsA} steps (${equil_collisions} contacts/particle)"
+run             ${stepsA}
+
+# ---- calibration: mean overlap -> delta_target, median contact -> Nc_target steps
+include         recalibrate.in
+variable        nu_cal  equal $(f_diag[3])
+unfix           diag
+thermo_style    custom step time v_Ttr v_Trot
+
+# ---- exact start: T_tr = T_rot = T0, reference state for the stiffness rescaling
+include         rescale_temperatures.in
+variable        T_ref   equal ${T0}
+variable        kn_ref  equal ${kn}
+variable        dt_ref  equal ${dtrun}
+# collisions per step stay constant under the Hertz rescaling, so these hold for all blocks
+variable        nwin        equal $(round(v_tau_window/(v_nu_cal*v_dtrun)))
+variable        steps_block equal $(v_nwin*round(v_tau_block/v_tau_window))
+variable        nsnap       equal $(v_nwin*round(v_tau_snapshot/v_tau_window))
+print           "CALIBRATED: kn=${kn} eta=${eta} dt=${dtrun} nu=${nu_cal} nwin=${nwin} steps_block=${steps_block} nsnap=${nsnap}"
+
+# ================================================================ B: cooling
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1
+reset_timestep  0 time 0.0
+fix             diag all spherocyl/diag ${nwin} hcs sample $(round(v_nwin/10)+1) log_fraction ${log_fraction}
+fix             tlog all print ${nwin} "${t} ${Ttr} ${Trot}" file hcs_T.dat screen no title "# time T_tr T_rot (instantaneous; T = (3 T_tr + 2 T_rot)/5)"
+dump            snap all custom ${nsnap} snapshots.lammpstrj.gz id vx vy vz c_q[1] c_q[2] c_q[3] c_q[4] c_am[1] c_am[2] c_am[3]
+dump_modify     snap sort id
+thermo          ${nwin}
+thermo_style    custom step time v_Ttr v_Trot f_diag[3] f_diag[4] f_diag[14] f_diag[12] f_diag[10]
+
+print           "STAGE B: cooling ${nblocks} blocks x ${steps_block} steps (about ${tau_block} contacts/particle each)"
+include         hcs_blocks.in
+
+print "================================================================"
+print "DONE  AR=${AR} alpha=${alpha}: hcs.* hcs_T.dat snapshots.lammpstrj.gz"
+print "================================================================"

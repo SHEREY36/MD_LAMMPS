@@ -1,0 +1,11 @@
+# Keep the hard-particle limit while the gas cools.  For a Hertz contact at
+# impact speed g ~ sqrt(T_tr): delta_max ~ (g^2/kn)^(2/5) and t_c ~ delta_max/g.
+# kn ~ T_tr holds the mean overlap at its calibrated value; dt ~ T_tr^-1/2 then
+# keeps the steps per contact, and the collisions per step, constant.
+variable        Ttr_h  equal $(v_Ttr)
+variable        kn     equal $(v_kn_ref*v_Ttr_h/v_T_ref)
+variable        eta    equal $(sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne))
+variable        dtrun  equal $(v_dt_ref*sqrt(v_T_ref/v_Ttr_h))
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1
+timestep        ${dtrun}
+print           "HARDEN: time=$(time) T_tr=${Ttr_h} kn=${kn} eta=${eta} dt=${dtrun}"
