@@ -8,3 +8,5 @@ negishi/logs/
 analysis/hcs_timeseries/
 *.lammpstrj.gz
 __pycache__/
+bench_phi/
+bench/

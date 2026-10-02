@@ -49,29 +49,34 @@ effective cross-section σ_eff = ν/(n⟨g⟩), realised e_c, flags).
 ## Running on the workstation
 
 ```bash
-python3 generate_fresh_hcs.py                 # writes AR*/a*/s*/ and cases.txt
-./run_local_queue.sh 3 4 /path/to/lmp_mpi     # 3 cases at a time, 4 ranks each
+python3 generate_fresh_hcs.py                 # writes AR*/a*/s*/ and cases*.txt
+./run_local_queue.sh 6 1 /path/to/lmp_mpi     # one rank per case, one case per physical core
 python3 postprocess_fresh_hcs.py
 ./bench_serial.sh /path/to/lmp_mpi            # serial cost of the first collision/particle
 ```
 
 ## Running on Negishi (from `git pull`)
 
+Every run is far below the 4 h standby limit, so the sweep goes to the
+**standby QOS**: idle nodes anywhere in the cpu partition (446 nodes × 128
+cores), up to 14,272 cores per account, not counted against morri353 and not
+competing with jobs queued on the group's normal QOS. All 126 runs are submitted
+at once (4 ranks for the main cases, 8 for the near-spheres); with idle cores the
+sweep finishes in about 20 minutes.
+
 ```bash
 cd /scratch/negishi/$USER/MD_LAMMPS
 git pull
 cd runs/fresh_hcs
-export PYTHON=/scratch/negishi/$USER/DSMC_V2/.conda-v2/bin/python   # any python with numpy
-mkdir -p bin && cp ../fresh_usf/bin/lmp_mpi bin/                     # the frozen fresh_usf binary
-$PYTHON generate_fresh_hcs.py                                       # 126 cases, cases.txt
-bash negishi/jobs/submit_all.sh                                     # two arrays (main 45 min, near-sphere 3 h), 4 ranks/case
-squeue -u $USER
-# when finished:
-$PYTHON postprocess_fresh_hcs.py
-# optional, serial timing on one compute node (about 45 min in all):
-sinteractive -A morri353 -p cpu -n 1 -t 1:30:00
-source negishi/modules.sh && ./bench_serial.sh $(pwd)/bin/lmp_mpi && exit
+bash negishi/submit_hcs.sh            # finds python+numpy (or set PYTHON=...), generates, submits
+squeue -u $USER -q standby            # watch
+bash negishi/status.sh                # finished / running / not started
+module load conda && python postprocess_fresh_hcs.py    # when finished: analysis/summary.csv
 ```
+
+`submit_hcs.sh` copies the frozen fresh_usf binary to `bin/` if it is not there.
+A killed or timed-out case restarts from the beginning when resubmitted; finished
+cases (log contains `DONE`) are skipped.
 
 Copy back only the reduced data:
 `rsync -av negishi:/scratch/negishi/$USER/MD_LAMMPS/runs/fresh_hcs/analysis/ analysis/`

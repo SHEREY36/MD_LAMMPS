@@ -14,6 +14,7 @@ Definitions (window values come from fix spherocyl/diag):
   tau_c   cumulative contacts per particle, sum of 2 N_start / N
   T       (3 T_tr + 2 T_rot)/5
   gamma   d ln T / d tau_c, least squares over tau_c >= tau_relax
+          (tau_relax = 8 for AR >= 1.5 and 60 for the near-spheres, AR <= 1.3)
   alpha_eff = sqrt(1 + 5 gamma): restitution of a gas with five quadratic
           degrees of freedom whose collisions remove (1 - alpha^2) of the
           normal-channel energy, cooling at the same rate per collision
@@ -135,7 +136,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=HERE)
     ap.add_argument("--tau-relax", type=float, default=8.0,
-                    help="contacts per particle after which theta is stationary")
+                    help="contacts per particle after which theta is stationary (AR >= 1.5)")
+    ap.add_argument("--tau-relax-near-sphere", type=float, default=60.0,
+                    help="same for AR <= 1.3, where exchange takes ~20 encounters")
     args = ap.parse_args()
     rows = []
     for case in sorted(glob.glob(os.path.join(args.root, "AR*", "a*", "s*"))):
@@ -143,7 +146,8 @@ def main():
         if not (os.path.exists(log) and re.search(r"^DONE", open(log).read(), re.M)):
             print(f"skip {os.path.relpath(case, args.root)} (not finished)")
             continue
-        rows.append(reduce_case(case, args.tau_relax))
+        AR = float(os.path.relpath(case, args.root).split(os.sep)[0][2:])
+        rows.append(reduce_case(case, args.tau_relax_near_sphere if AR <= 1.3 else args.tau_relax))
         r = rows[-1]
         print(f"AR={r['AR']:<4g} alpha={r['alpha']:.2f} {r['seed']}  tau={r['tau_end']:5.1f}  "
               f"theta*={r['theta_star']:.4f}+-{r['theta_star_err']:.4f}  gamma={r['gamma']:.5f}  "
