@@ -5,6 +5,9 @@
 python3 check_regression.py  # PASS/FAIL table -> regression_report.txt
 ```
 
+Every `pair_style gran/spherocyl/...` line needs `damp_velocity contact|center` (contact = normal
+velocity of the contact points, model C1; center = of the centres, the earlier model R1).
+
 Run it after any change to `src/GRANULAR/*spherocyl*`, `src/fix_deform.cpp` or the
 fresh USF templates. Every test compares against an independent reference, not
 against an earlier run of the same code.
@@ -21,6 +24,9 @@ against an earlier run of the same code.
 | T7 | `fix nve/spherocyl rot_sllod` | must stop with an explanation |
 | T8 | 1 vs 4 MPI ranks | identical stress and collision counts |
 | T9 | fast shear with several box flips | peculiar momentum conserved through flips (unpatched `fix deform` gives jumps of m γ̇ L_y per atom) |
+| T10 | rotation-driven contact of two parallel AR=2 rods (a: centres at rest; b: centres separating while the contact points approach), `damp_velocity contact` and `center` | contact: one collision, damping never does positive work (`frac_dpos` = 0), e_c equals the 1D Hertz–Tsuji restitution at the effective normal mass 1/m_eff = 2/m + \|ρ×n\|²/I⊥ (within 1 %); center (Model R): positive damping work is detected |
+| T11 | spheres (H = 0), dissipative gas, `contact` vs `center` | bitwise-identical trajectories (ρ = 0, so both damping velocities coincide) |
+| T12 | dissipative AR=2 rod gas, new binary with `damp_velocity center` vs the archived Model R binary (`LMP_R=...`) | bitwise-identical trajectories: the change adds nothing to the Model R path |
 
 `dsmc_usf_spheres.py` is a homogeneous DSMC of the Boltzmann equation for inelastic
 hard spheres in USF. Option k = 2 doubles the streaming term. It reproduces the

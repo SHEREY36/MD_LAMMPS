@@ -7,6 +7,8 @@
 #   MPIRUN=<launcher> default "mpirun --oversubscribe" (also right inside sinteractive;
 #                     the script passes -np N, so plain srun does not work here)
 #   PYTHON=<python>   default python3 (needs numpy), e.g. .../.conda-v2/bin/python
+#   LMP_R=<binary>    Model R binary (centre damping, no damp_velocity keyword) for T12;
+#                     T12 is skipped when unset
 # Every run, even on 1 rank, goes through $MPIRUN: a bare lmp_mpi inside an
 # sinteractive/srun step fails in MPI_Init ("PMK_KVS_Barrier duplicate request").
 cd "$(dirname "$0")"
@@ -22,6 +24,17 @@ for st in hertz hooke; do for a in 0.5 0.7 0.9; do
   $SERIAL $LMP -in in.t3_binary -var style $st -var alpha $a -log log.t3_${st}_$a -screen none
 done; done
 $SERIAL $LMP -in in.t3b_rods -log log.t3b -screen none
+# T10 rotation-driven contacts, both damping definitions (contact = model C1, center = R1)
+for c in a b; do for dv in contact center; do
+  $SERIAL $LMP -in in.t10_rotation_contact -var case $c -var dv $dv -log log.t10${c}_$dv -screen none
+done; done
+# T11 spheres: contact and center damping must give identical trajectories
+for dv in contact center; do $SERIAL $LMP -in in.t11_sphere_identity -var dv $dv -log log.t11_$dv -screen none; done
+# T12 Model R reproduction (only when LMP_R points to a Model R binary, e.g. the archived one)
+if [ -n "${LMP_R:-}" ]; then
+  $SERIAL $LMP -in in.t12_modelR_repro -var dv center -log log.t12_center -screen none
+  $SERIAL $(readlink -f "$LMP_R") -in in.t12_modelR_repro -var dv none -log log.t12_none -screen none
+fi
 # T7 must stop with an ERROR (rot_sllod was removed); check_regression.py looks for it in log.t7
 echo "T7: the mpirun 'non-zero exit code / job aborted' message that follows is EXPECTED"
 $SERIAL $LMP -in in.t7_rot_sllod -log log.t7 -screen none

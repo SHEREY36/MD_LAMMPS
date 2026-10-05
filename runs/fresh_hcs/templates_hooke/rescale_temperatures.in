@@ -1,0 +1,17 @@
+# Rescale translational velocities and angular momenta so that cooling starts
+# exactly at T_tr = T_rot = T0 (zero total momentum is kept by the scaling).
+run             0
+variable        Ttr_pre   equal $(v_Ttr)
+variable        Trot_pre  equal $(v_Trot)
+variable        sfv       equal $(sqrt(v_T0/v_Ttr_pre))
+variable        sfr       equal $(sqrt(v_T0/v_Trot_pre))
+variable        vxs  atom vx*${sfv}
+variable        vys  atom vy*${sfv}
+variable        vzs  atom vz*${sfv}
+variable        amxs atom c_am[1]*${sfr}
+variable        amys atom c_am[2]*${sfr}
+variable        amzs atom c_am[3]*${sfr}
+set             group all vx v_vxs vy v_vys vz v_vzs
+set             group all angmom v_amxs v_amys v_amzs
+run             0
+print           "RESCALE: T_tr ${Ttr_pre} -> $(v_Ttr), T_rot ${Trot_pre} -> $(v_Trot)"

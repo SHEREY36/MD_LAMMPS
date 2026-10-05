@@ -816,7 +816,8 @@ void FixSpherocylDiag::finish_window()
             safe(g[A_UU], nend), safe(g[A_NMULTI], nend), ffm, ffcv2, ncdisp, safe(g[A_Z], zsum),
             safe(g[A_Z + 1], zsum), safe(g[A_Z + 2], zsum), safe(g[A_Z + 3], zsum));
     for (int k = 0; k < 6; k++) fprintf(fp_coll, " %.6g", safe(g[A_NN + k], nend));
-    fprintf(fp_coll, " %.6g %.6g\n", dur_med, dur_p10);
+    fprintf(fp_coll, " %.6g %.6g %.6g %.6g\n", dur_med, dur_p10, safe(g[A_DPOS], g[A_DSTEP]),
+            safe(g[A_WDPOS], g[A_WDABS]));
     fflush(fp_coll);
 
     fprintf(fp_struct, "%.0f %.10g %.8g %d", step, tnow, strain_total, nsamp);
@@ -865,6 +866,7 @@ void FixSpherocylDiag::finish_window()
   // an ideal gas has S(k) ~ Exp(1) per mode: use the mean over the 10 modes
   if (savg > 2.5 || S[S_DISP + 1] > 1.5) flags += "C";
   if (dissipative && nend > 0 && safe(g[A_NANTI], nend) > 0.01) flags += "G";
+  if (g[A_DPOS] > 0.0) flags += "P";    // damping did positive work (impossible for contact-point damping)
   if (cratio > 8.0) flags += "V";
   if (flags.empty()) flags = "-";
   if (comm->me == 0) {
@@ -1010,13 +1012,17 @@ void FixSpherocylDiag::open_files()
           "# e_tr, e_c are momentum weighted: -sum g_n,post / sum g_n,pre over binary collisions; "
           "e_out = fraction of binary collisions whose individual e is outside [0,1]\n"
           "# long = contact longer than 5x the median duration of the previous window\n"
+          "# frac_dpos = fraction of contact steps in which the normal damping force did positive "
+          "work on the relative motion of the contact points (0 for damp_velocity contact) ; "
+          "Wd_pos_over_Wd_abs = that positive work / |damping work|\n"
           "# 1:step 2:time 3:strain 4:N_start 5:nu 6:N_end 7:frac_binary 8:e_tr 9:e_tr_out 10:e_c "
           "11:e_c_out 12:<|g_n|> 13:<g_n^2> 14:dur_mean_steps 15:dur_min_steps 16:dur_max_steps "
           "17:tc_mean 18:frac_short 19:frac_long 20:dmax_mean 21:dmax_max 22:frac_gain "
           "23:dE/E_mean 24:dE_rel_tr_per_coll 25:dE_rot_per_coll 26:frac_same_partner "
           "27:frac_endcap 28:<|ui.uj|> 29:frac_multibody 30:freeflight_mean 31:freeflight_cv2 "
           "32:collcount_disp 33:P(z=0) 34:P(z=1) 35:P(z=2) 36:P(z>=3) 37:nn_xx 38:nn_yy 39:nn_zz "
-          "40:nn_xy 41:nn_xz 42:nn_yz 43:dur_median_steps 44:dur_p10_steps\n");
+          "40:nn_xy 41:nn_xz 42:nn_yz 43:dur_median_steps 44:dur_p10_steps 45:frac_dpos "
+          "46:Wd_pos_over_Wd_abs\n");
   fprintf(fp_struct,
           "# structure samples averaged over the window; modes are in box-following (lamda) "
           "coordinates, k = 2 pi (n1 b1 + n2 b2 + n3 b3)\n"

@@ -32,7 +32,14 @@ fi
 [ -n "$PY" ] || { echo "no python with numpy found: set PYTHON=/path/to/python"; exit 1; }
 echo "python: $PY"
 
-[ -x bin/lmp_mpi ] || { mkdir -p bin; cp ../fresh_usf/bin/lmp_mpi bin/; chmod +x bin/lmp_mpi; }
+# The binary must be given explicitly and must be a contact-point-damping (model C1) build;
+# an empty bin/ is never filled from another folder (that silently ran an older binary).
+LMP=${LMP:?set LMP to the model C1 lmp_mpi (e.g. runs/fresh_usf/bin/lmp_mpi after build_lammps.sh)}
+mkdir -p bin && cp "$LMP" bin/lmp_mpi && chmod +x bin/lmp_mpi
+printf 'units lj\natom_style ellipsoid\nregion b block 0 1 0 1 0 1\ncreate_box 1 b\npair_style gran/spherocyl/mfix/history 1 0 0 0 0 1 damp_velocity contact\n' > /tmp/c1_banner_$$.in
+mpirun -np 1 bin/lmp_mpi -in /tmp/c1_banner_$$.in -log none -screen /tmp/c1_banner_$$.out < /dev/null >/dev/null 2>&1
+grep -q "damping velocity = contact point" /tmp/c1_banner_$$.out || { echo "bin/lmp_mpi is not a model C1 build"; exit 1; }
+rm -f /tmp/c1_banner_$$.in /tmp/c1_banner_$$.out
 "$PY" generate_fresh_hcs.py --lmp "$HCS/bin/lmp_mpi" > generate.log
 n1=$(grep -c . cases_main.txt)
 n2=$(grep -c . cases_near_sphere.txt)

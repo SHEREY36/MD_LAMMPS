@@ -141,6 +141,7 @@ variable        log_fraction     equal {args.log_fraction}
 variable        skin             equal {args.skin}
 variable        seed             equal {seed}
 variable        datafile         string spherocyl.data
+variable        contact_model    string C1
 """)
             for fn in ("in.usf", "recalibrate.in", "recalibrate_apply.in"):
                 shutil.copy(os.path.join(tdir, fn), cdir)

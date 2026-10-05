@@ -1,0 +1,28 @@
+# T12 Model R reproduction: the new binary with 'damp_velocity center' must reproduce the
+# archived Model R binary (no keyword) bit for bit on a dissipative AR=2 rod gas.
+# Run: new binary -var dv center ; Model R binary -var dv none ; t12_*.dump must be identical.
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data rods_ar2_T1.data
+set type 1 mass 1.000000357564170
+variable meff equal 0.5
+variable gref equal 2.26
+variable kn equal 5.0*v_meff*v_gref^2/(4.0*0.004^2.5)
+variable lne equal abs(ln(0.7))
+variable eta equal sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne)
+if "${dv} == none" then &
+  "pair_style gran/spherocyl/mfix/history ${kn} 0 ${eta} 0 0 1" &
+else &
+  "pair_style gran/spherocyl/mfix/history ${kn} 0 ${eta} 0 0 1 damp_velocity ${dv}"
+pair_coeff * * 0.5 0.5
+neighbor 0.5 bin
+neigh_modify delay 0 every 1 check yes one 200 page 20000
+fix int all nve/spherocyl
+timestep $(2.94*0.004/v_gref/40.0)
+fix diag all spherocyl/diag 10000 t12_${dv} sample 1000
+run 20000
+write_dump all custom t12_${dv}.dump id x y z vx vy vz angmomx angmomy angmomz modify sort id format float %.17g

@@ -228,10 +228,19 @@ void PairGranSpherocylMfixHistory::compute(int eflag, int vflag)
       delta_sqrt = std::sqrt(delta);
       delta_quarter = std::sqrt(delta_sqrt);
 
-      vr1 = v[i][0] - v[j][0];
-      vr2 = v[i][1] - v[j][1];
-      vr3 = v[i][2] - v[j][2];
-      vnnr = vr1 * delx + vr2 * dely + vr3 * delz;
+      // normal damping velocity: contact points (damp_velocity contact, C1) or
+      // centres (damp_velocity center, R1); see PairGranSpherocylHistory::contact_velocity
+      double vc[3] = {0.0, 0.0, 0.0};
+      if (damp_contact || diag) contact_velocity(i, j, rhoi, rhoj, vc);
+      const double vnnr_c = vc[0] * delx + vc[1] * dely + vc[2] * delz;
+      if (damp_contact) {
+        vnnr = vnnr_c;
+      } else {
+        vr1 = v[i][0] - v[j][0];
+        vr2 = v[i][1] - v[j][1];
+        vr3 = v[i][2] - v[j][2];
+        vnnr = vr1 * delx + vr2 * dely + vr3 * delz;
+      }
 
       if (atom->rmass_flag) {
         mi = rmass[i];
@@ -250,6 +259,7 @@ void PairGranSpherocylMfixHistory::compute(int eflag, int vflag)
       if (mask[j] & freeze_group_bit) mj = 1.0e20;
 
       damp = gamman * delta_quarter * vnnr * rsqinv;
+      const double pdamp = -damp * vnnr_c;    // damping power on the contact-point motion
       ccel = kn * delta_sqrt * delta * rinv - damp;
       if (limit_damping && (ccel < 0.0)) ccel = 0.0;
 
@@ -299,7 +309,7 @@ void PairGranSpherocylMfixHistory::compute(int eflag, int vflag)
       if (diag) {
         const double F[3] = {fx, fy, fz};
         diag_contact(i, j, nlocal, newcontact, hist, del, r, radsum, rhoi, rhoj, ui, uj, F,
-                     kn * delta_sqrt * delta, 0.4 * kn * delta * delta * delta_sqrt);
+                     kn * delta_sqrt * delta, 0.4 * kn * delta * delta * delta_sqrt, pdamp);
       }
 
       // Virial with the centre-of-mass branch vector x_i - x_j (NOT the

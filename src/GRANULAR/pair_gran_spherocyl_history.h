@@ -24,10 +24,19 @@ class PairGranSpherocylHistory : public PairGranHookeHistory {
   ~PairGranSpherocylHistory() override;
 
   void compute(int, int) override;
+  void settings(int, char **) override;
   void coeff(int, char **) override;
   void init_style() override;
   double init_one(int, int) override;
   void *extract(const char *, int &) override;
+  void write_restart_settings(FILE *) override;
+  void read_restart_settings(FILE *) override;
+
+  // Normal damping velocity, set by the REQUIRED pair_style keyword
+  //   damp_velocity contact : normal velocity of the contact points,
+  //                           (v_i + w_i x rho_i - v_j - w_j x rho_j).n   (contact_model C1)
+  //   damp_velocity center  : normal velocity of the centres only, (v_i - v_j).n   (R1)
+  int damp_contact;
 
   // Diagnostics hook, set by fix spherocyl/diag (nullptr = diagnostics off).
   FixSpherocylDiag *diag;
@@ -106,10 +115,17 @@ class PairGranSpherocylHistory : public PairGranHookeHistory {
 
   // fix spherocyl/diag bookkeeping for a touching pair (called every step)
   //   F = total force on i, fel = magnitude of the elastic normal force,
-  //   uel = elastic energy stored in this contact
+  //   uel = elastic energy stored in this contact,
+  //   pdamp = power of the normal damping force on the relative motion of the
+  //           contact points (<= 0 for contact-point damping)
   void diag_contact(int i, int j, int nlocal, int newcontact, double *hist, const double *del,
                     double r, double radsum, const double *rhoi, const double *rhoj,
-                    const double *ui, const double *uj, const double *F, double fel, double uel);
+                    const double *ui, const double *uj, const double *F, double fel, double uel,
+                    double pdamp);
+
+  // relative velocity of the contact points, (v_i + w_i x rho_i) - (v_j + w_j x rho_j)
+  void contact_velocity(int i, int j, const double *rhoi, const double *rhoj, double *vc);
+  void print_damping_banner();
   // fix spherocyl/diag bookkeeping when a touching pair separates
   void diag_release(int i, int j, int nlocal, double *hist, const double *rhoi,
                     const double *rhoj);

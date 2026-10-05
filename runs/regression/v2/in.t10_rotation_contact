@@ -1,0 +1,27 @@
+# T10 rotation-driven contact between two parallel AR=2 rods (m = 1, I_perp = 0.3025).
+# Rod 1 spins about z (w = 2) so that its end at x = +0.5 swings into rod 2; the
+# centres start at rest (case a) or separating (case b).  Effective normal mass of
+# the contact: 1/m_eff = 2/m + |rho_1 x n|^2/I_perp = 2 + 0.25/0.3025.
+#   damp_velocity contact: damping never does positive work (frac_dpos = 0), the pair
+#                          loses energy, and e_c follows the 1D Hertz-Tsuji law with m_eff
+#   damp_velocity center (Model R): the damping does positive work on the
+#                          contact motion during part of the contact (frac_dpos > 0)
+# Run: lmp -in in.t10_rotation_contact -var case a -var dv contact
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data data.t10${case}
+set type 1 mass 1.0
+variable meff equal 0.5
+variable lne equal abs(ln(0.7))
+variable kn equal 5.0*v_meff*1.0/(4.0*0.004^2.5)
+variable eta equal sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne)
+pair_style gran/spherocyl/mfix/history ${kn} 0 ${eta} 0 0 1 damp_velocity ${dv}
+pair_coeff * * 0.5 0.5
+fix int all nve/spherocyl
+timestep $(2.94*0.004/1.0/80.0)
+fix diag all spherocyl/diag 4000 t10${case}_${dv} log_fraction 1.0
+run 4000

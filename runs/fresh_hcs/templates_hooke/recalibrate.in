@@ -1,0 +1,11 @@
+# ----------------------------------------------------------------------
+# Hard-particle calibration from the diag statistics of the last window:
+#   f_diag[4]  = mean max overlap / (Ri+Rj) over completed collisions
+#   f_diag[20] = number of completed collisions in the window
+# Linear spring at fixed impact speed: delta ~ kn^(-1/2), t_c ~ kn^(-1/2).
+# (same rule as runs/fresh_usf/templates/recalibrate.in)
+# ----------------------------------------------------------------------
+if "$(f_diag[20]) < 200" then &
+  "print 'RECALIBRATE: only $(f_diag[20]) collisions, keeping kn=${kn} dt=${dtrun}'" &
+else &
+  "include recalibrate_apply.in"

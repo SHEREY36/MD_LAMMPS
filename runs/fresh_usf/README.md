@@ -13,6 +13,18 @@ All cases use the corrected code and physics:
 | hardness | fixed kn, typical overlap 1–3 % d | kn, dt recalibrated at the steady T: mean overlap 0.4 % d, ≈40 steps per contact |
 | production | `jump SELF` failed under `<`, only 1 of 3 blocks ran | explicit blocks, restart after each |
 
+## Contact law (model C1, since 2026-10-05)
+
+Normal force `F = kn δ^{3/2} + η δ^{1/4} v_n` with `v_n` the normal component of the relative
+velocity of the **contact points**, `(v_i + ω_i×ρ_i − v_j − ω_j×ρ_j)·n`, and
+`η = √5 √(kn m*) |ln α|/√(π²+ln²α)`, `m* = m_i m_j/(m_i+m_j)`. The damping never does positive
+work, and α is the restitution of a head-on impact (an off-centre contact has a smaller effective
+normal mass and restitutes less). Every `pair_style` line carries `damp_velocity contact`; the
+earlier model R1 damped the centre velocity (`damp_velocity center`, data archived in
+`Thesis/ModelR_results_and_data`). Postprocessors read the pair-style banner in `log.lammps` and keep
+only C1 cases unless `--require-contact-model` says otherwise; `hcs.coll`/`prod.coll` report
+`frac_dpos` (fraction of contact steps with positive damping work: 0 for C1).
+
 ## Running
 
 ```bash

@@ -1,0 +1,25 @@
+two parallel AR=2 rods: rod 1 spins into rod 2, centres at rest (T10a)
+
+2 atoms
+2 ellipsoids
+1 atom types
+
+-10 10 xlo xhi
+-10 10 ylo yhi
+-10 10 zlo zhi
+0 0 0 xy xz yz
+
+Atoms # ellipsoid
+
+1 1 1 1.0 0.0 0.0 0.0
+2 1 1 1.0 0.5 1.02 0.0
+
+Ellipsoids
+
+1 1.0 1.0 2.0 0.7071067811865476 0.0 0.7071067811865476 0.0
+2 1.0 1.0 2.0 0.7071067811865476 0.0 0.7071067811865476 0.0
+
+Velocities
+
+1 0.0 0.0 0.0 0.0 0.0 0.605
+2 0.0 0.0 0.0 0.0 0.0 0.0

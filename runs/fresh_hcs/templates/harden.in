@@ -6,6 +6,6 @@ variable        Ttr_h  equal $(v_Ttr)
 variable        kn     equal $(v_kn_ref*v_Ttr_h/v_T_ref)
 variable        eta    equal $(sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne))
 variable        dtrun  equal $(v_dt_ref*sqrt(v_T_ref/v_Ttr_h))
-pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1 damp_velocity contact
 timestep        ${dtrun}
 print           "HARDEN: time=$(time) T_tr=${Ttr_h} kn=${kn} eta=${eta} dt=${dtrun}"

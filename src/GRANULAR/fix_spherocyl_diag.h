@@ -117,6 +117,10 @@ class FixSpherocylDiag : public Fix {
     A_FFN = A_NN + 6,            // free flights: count, sum, sum^2
     A_FFS,
     A_FFS2,
+    A_DSTEP,                     // contact steps (owned pairs)
+    A_DPOS,                      // contact steps in which the damping did positive work
+    A_WDPOS,                     // positive damping work on the contact-point motion
+    A_WDABS,                     // |damping work| on the contact-point motion
     NACC
   };
   enum { M_DURMIN = 0, M_NEGDURMAX, M_NEGDMAXMAX, NMIN };    // MPI_MIN slots (max stored as -max)

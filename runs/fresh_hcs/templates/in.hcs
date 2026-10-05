@@ -59,7 +59,7 @@ read_data       ${datafile}
 set             type 1 mass ${m}
 variable        N  equal count(all)
 
-pair_style      gran/spherocyl/mfix/history ${kn} 0.0 0.0 0.0 0.0 1
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 0.0 0.0 0.0 1 damp_velocity contact
 pair_coeff      * * ${R} ${H}
 neighbor        ${skin} bin
 neigh_modify    delay 0 every 1 check yes one 200 page 20000
@@ -109,7 +109,7 @@ variable        nsnap       equal $(v_nwin*round(v_tau_snapshot/v_tau_window))
 print           "CALIBRATED: kn=${kn} eta=${eta} dt=${dtrun} nu=${nu_cal} nwin=${nwin} steps_block=${steps_block} nsnap=${nsnap}"
 
 # ================================================================ B: cooling
-pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1 damp_velocity contact
 reset_timestep  0 time 0.0
 fix             diag all spherocyl/diag ${nwin} hcs sample $(round(v_nwin/10)+1) log_fraction ${log_fraction}
 fix             tlog all print ${nwin} "${t} ${Ttr} ${Trot}" file hcs_T.dat screen no title "# time T_tr T_rot (instantaneous; T = (3 T_tr + 2 T_rot)/5)"

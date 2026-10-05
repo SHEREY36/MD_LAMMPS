@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 using namespace LAMMPS_NS;
 using MathConst::MY_PI;
@@ -73,6 +74,7 @@ PairGranSpherocylHistory::PairGranSpherocylHistory(LAMMPS *lmp)
   events_log_every = 1000;
   events_fp = nullptr;
   diag = nullptr;
+  damp_contact = -1;    // set by the required damp_velocity keyword
   // shear displacement (3) + per-contact collision record for fix spherocyl/diag
   size_history = NSHEAR + NDIAG;
   // The neighbor list is NOT a size (REQ_SIZE) list (atom_style ellipsoid has no
@@ -108,6 +110,84 @@ void PairGranSpherocylHistory::allocate_sc()
     R[i] = 0.0;
     H[i] = 0.0;
   }
+}
+
+/* ----------------------------------------------------------------------
+   pair_style gran/spherocyl/... Kn Kt gamman gammat xmu dampflag
+                                 [limit_damping] damp_velocity contact|center
+   The damp_velocity keyword is required: pair_style is re-issued during a
+   run (stiffness recalibration), and a default would silently switch the
+   damping definition.  An older binary rejects the keyword.
+------------------------------------------------------------------------- */
+
+void PairGranSpherocylHistory::settings(int narg, char **arg)
+{
+  std::vector<char *> rest;
+  int found = 0;
+  for (int k = 0; k < narg; k++) {
+    if (strcmp(arg[k], "damp_velocity") == 0) {
+      if (k + 1 >= narg)
+        error->all(FLERR, "pair gran/spherocyl: damp_velocity needs 'contact' or 'center'");
+      if (strcmp(arg[k + 1], "contact") == 0)
+        damp_contact = 1;
+      else if (strcmp(arg[k + 1], "center") == 0)
+        damp_contact = 0;
+      else
+        error->all(FLERR, "pair gran/spherocyl: damp_velocity must be 'contact' or 'center', not '{}'",
+                   arg[k + 1]);
+      found = 1;
+      k++;
+    } else {
+      rest.push_back(arg[k]);
+    }
+  }
+  if (!found)
+    error->all(FLERR,
+               "pair gran/spherocyl: keyword 'damp_velocity contact|center' is required "
+               "(contact = normal velocity of the contact points, center = of the centres)");
+  PairGranHookeHistory::settings((int) rest.size(), rest.data());
+  print_damping_banner();
+}
+
+void PairGranSpherocylHistory::print_damping_banner()
+{
+  if (comm->me == 0)
+    utils::logmesg(lmp, "pair gran/spherocyl: damping velocity = {}\n",
+                   damp_contact == 1 ? "contact point" : "centre");
+}
+
+void PairGranSpherocylHistory::write_restart_settings(FILE *fp)
+{
+  PairGranHookeHistory::write_restart_settings(fp);
+  fwrite(&damp_contact, sizeof(int), 1, fp);
+}
+
+void PairGranSpherocylHistory::read_restart_settings(FILE *fp)
+{
+  PairGranHookeHistory::read_restart_settings(fp);
+  if (comm->me == 0) utils::sfread(FLERR, &damp_contact, sizeof(int), 1, fp, nullptr, error);
+  MPI_Bcast(&damp_contact, 1, MPI_INT, 0, world);
+  if (damp_contact != 0 && damp_contact != 1)
+    error->all(FLERR, "pair gran/spherocyl: restart file has no damping-velocity setting");
+  print_damping_banner();
+}
+
+/* ----------------------------------------------------------------------
+   relative velocity of the contact points, (v_i + w_i x rho_i) - (v_j + w_j x rho_j).
+   rho are the closest points on the axes.  Using them instead of the surface
+   points is exact for the normal component, since (w x n).n = 0.
+------------------------------------------------------------------------- */
+
+void PairGranSpherocylHistory::contact_velocity(int i, int j, const double *rhoi,
+                                                const double *rhoj, double *vc)
+{
+  double **v = atom->v;
+  double wi[3], wj[3], ei, ej;
+  omega_erot(i, wi, ei);
+  omega_erot(j, wj, ej);
+  vc[0] = v[i][0] + wi[1] * rhoi[2] - wi[2] * rhoi[1] - (v[j][0] + wj[1] * rhoj[2] - wj[2] * rhoj[1]);
+  vc[1] = v[i][1] + wi[2] * rhoi[0] - wi[0] * rhoi[2] - (v[j][1] + wj[2] * rhoj[0] - wj[0] * rhoj[2]);
+  vc[2] = v[i][2] + wi[0] * rhoi[1] - wi[1] * rhoi[0] - (v[j][2] + wj[0] * rhoj[1] - wj[1] * rhoj[0]);
 }
 
 void PairGranSpherocylHistory::coeff(int narg, char **arg)
@@ -467,11 +547,20 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
       rinv = 1.0 / (r + 1e-30);
       rsqinv = 1.0 / (rsq + 1e-30);
 
-      // translational-only relative velocity for the normal channel
-      // (omega x rho omitted by design: gamma_n is defined for translational v_rel)
-      vr1 = v[i][0] - v[j][0];
-      vr2 = v[i][1] - v[j][1];
-      vr3 = v[i][2] - v[j][2];
+      // relative velocity used by the damping and the tangential channel:
+      // contact points (damp_velocity contact) or centres (damp_velocity center)
+      double vc[3] = {0.0, 0.0, 0.0};
+      if (damp_contact || diag) contact_velocity(i, j, rhoi, rhoj, vc);
+      if (damp_contact) {
+        vr1 = vc[0];
+        vr2 = vc[1];
+        vr3 = vc[2];
+      } else {
+        vr1 = v[i][0] - v[j][0];
+        vr2 = v[i][1] - v[j][1];
+        vr3 = v[i][2] - v[j][2];
+      }
+      const double vnnr_c = vc[0] * delx + vc[1] * dely + vc[2] * delz;
 
       // normal component (same algebra as parent)
       vnnr = vr1 * delx + vr2 * dely + vr3 * delz;
@@ -503,8 +592,10 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
 
       meff = mi * mj / (mi + mj);
 
-      // normal damping (same form as parent: gamman * meff * vn)
+      // normal damping (same form as parent: gamman * meff * vn); its power on
+      // the relative motion of the contact points is -damp * vnnr_c
       damp = meff * gamman * vnnr * rsqinv;
+      const double pdamp = -damp * vnnr_c;
 
       // Hooke normal force coefficient (same as parent)
       ccel = kn * (radsum - r) * rinv - damp;
@@ -609,7 +700,7 @@ void PairGranSpherocylHistory::compute(int eflag, int vflag)
         const double F[3] = {fx, fy, fz};
         const double delta = radsum - r;
         diag_contact(i, j, nlocal, newcontact, hist, del, r, radsum, rhoi, rhoj, ui, uj, F,
-                     kn * delta, 0.5 * kn * delta * delta);
+                     kn * delta, 0.5 * kn * delta * delta, pdamp);
       }
 
       // Virial with the centre-of-mass branch vector x_i - x_j (NOT the
@@ -654,7 +745,7 @@ void PairGranSpherocylHistory::diag_contact(int i, int j, int nlocal, int newcon
                                             double radsum, const double *rhoi,
                                             const double *rhoj, const double *ui,
                                             const double *uj, const double *F, double fel,
-                                            double uel)
+                                            double uel, double pdamp)
 {
   FixSpherocylDiag *dg = diag;
   double *h = hist + NSHEAR;
@@ -755,6 +846,14 @@ void PairGranSpherocylHistory::diag_contact(int i, int j, int nlocal, int newcon
 
   if (owner) {
     double *acc = dg->acc;
+    // damping work on the contact-point motion: never positive for
+    // contact-point damping; positive steps measure the centre-velocity defect
+    acc[FixSpherocylDiag::A_DSTEP] += 1.0;
+    if (pdamp > 0.0) {
+      acc[FixSpherocylDiag::A_DPOS] += 1.0;
+      acc[FixSpherocylDiag::A_WDPOS] += pdamp * dt;
+    }
+    acc[FixSpherocylDiag::A_WDABS] += fabs(pdamp) * dt;
     const double *G = dg->G;    // Voigt: xx yy zz yz xz xy
     for (int a = 0; a < 3; a++)
       for (int b = 0; b < 3; b++) acc[FixSpherocylDiag::A_C + 3 * a + b] += rij[a] * F[b] * dt;

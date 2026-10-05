@@ -116,8 +116,76 @@ try:
           f"|dP|={dP:.1e} |dJ|={dJ:.1e} N_end={r[c['N_end']]:.0f} e_c={r[c['e_c']]:.3f}")
     check("T3b energy bookkeeping (rotation included)", abs(en[ce["resid_rel"]]) < 0.005,
           f"resid_rel={en[ce['resid_rel']]:.2e}")
+    check("T3b contact-point damping never does positive work",
+          r[c["frac_dpos"]] == 0.0 and en[ce["W_nc"]] < 0.0,
+          f"frac_dpos={r[c['frac_dpos']]:.3g} W_nc={en[ce['W_nc']]:.3e}")
 except Exception as ex:
     failed("T3b", ex)
+
+
+def restitution_1d(zeta_eff, n=200000):
+    """Restitution of a single Hertz-Tsuji contact, x'' = -x^1.5 - c x^0.25 x' with
+    c = sqrt(5) zeta_eff (zeta_eff = damping ratio at the effective normal mass)."""
+    c = math.sqrt(5.0) * zeta_eff
+    h, x, v, t = 6.0 / n, 0.0, 1.0, 0.0
+    f = lambda x, v: -max(x, 0.0)**1.5 - c * max(x, 0.0)**0.25 * v
+    while True:
+        k1x, k1v = v, f(x, v)
+        k2x, k2v = v + h / 2 * k1v, f(x + h / 2 * k1x, v + h / 2 * k1v)
+        k3x, k3v = v + h / 2 * k2v, f(x + h / 2 * k2x, v + h / 2 * k2v)
+        k4x, k4v = v + h * k3v, f(x + h * k3x, v + h * k3v)
+        xn = x + h / 6 * (k1x + 2 * k2x + 2 * k3x + k4x)
+        vn = v + h / 6 * (k1v + 2 * k2v + 2 * k3v + k4v)
+        t += h
+        if xn < 0.0 and t > 0.1:
+            return -(v + x / (x - xn) * (vn - v))
+        x, v = xn, vn
+
+
+# ---------------------------------------------------------------- T10
+try:
+    a = 0.7
+    zeta = abs(math.log(a)) / math.sqrt(math.pi**2 + math.log(a)**2)
+    m_eff = 1.0 / (2.0 + 0.25 / 0.3025)       # 1/m + 1/m + |rho x n|^2 / I_perp
+    e_ref = restitution_1d(zeta * math.sqrt(0.5 / m_eff))
+    for case in "ab":
+        fn = f"t10{case}_contact"
+        c = cols(fn + ".coll")
+        r = load(fn + ".coll")[-1]
+        en = load(fn + ".energy")[-1]
+        ce = cols(fn + ".energy")
+        check(f"T10{case} contact damping: one collision, e_c = 1D Hertz-Tsuji law at m_eff, "
+              "no positive damping work",
+              r[c["N_end"]] == 1 and abs(r[c["e_c"]] / e_ref - 1) < 0.01 and r[c["frac_dpos"]] == 0.0
+              and en[ce["W_nc"]] < 0.0 and abs(en[ce["resid_rel"]]) < 0.005,
+              f"e_c={r[c['e_c']]:.4f} (1D reference {e_ref:.4f}, m_eff={m_eff:.4f}), "
+              f"frac_dpos={r[c['frac_dpos']]:.3g}, W_nc={en[ce['W_nc']]:.3e}")
+        fn = f"t10{case}_center"
+        c = cols(fn + ".coll")
+        r = load(fn + ".coll")[-1]
+        check(f"T10{case} centre damping (Model R) does positive work on the contact motion",
+              r[c["frac_dpos"]] > 0.0,
+              f"frac_dpos={r[c['frac_dpos']]:.3f}, positive/|damping work|={r[c['Wd_pos_over_Wd_abs']]:.3f}")
+except Exception as ex:
+    failed("T10", ex)
+
+# ---------------------------------------------------------------- T11
+try:
+    same = open("t11_contact.dump").read() == open("t11_center.dump").read()
+    n = load("t11_contact.coll")[:, cols("t11_contact.coll")["N_end"]].sum()
+    check("T11 spheres: contact and centre damping give identical trajectories", same and n > 0,
+          f"bitwise identical: {same}, {n:.0f} collisions")
+except Exception as ex:
+    failed("T11", ex)
+
+# ---------------------------------------------------------------- T12
+try:
+    same = open("t12_center.dump").read() == open("t12_none.dump").read()
+    n = load("t12_center.coll")[:, cols("t12_center.coll")["N_end"]].sum()
+    check("T12 new binary with damp_velocity center reproduces the Model R binary", same and n > 0,
+          f"bitwise identical: {same}, {n:.0f} collisions")
+except Exception as ex:
+    failed("T12", ex, optional=True)
 
 # ---------------------------------------------------------------- T4
 try:

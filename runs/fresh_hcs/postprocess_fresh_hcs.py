@@ -36,7 +36,7 @@ COLUMNS = ["AR", "alpha", "seed", "N", "phi", "m", "tau_end", "t_end",
            "theta_star", "theta_star_err", "gamma", "gamma_err", "alpha_eff",
            "sigma_eff", "sigma_eff_err", "e_c", "e_tr", "frac_multibody",
            "frac_same_partner", "frac_gain", "dmax_mean", "frac_windows_C",
-           "a2_tr", "a2_rot", "max_resid_rel"]
+           "a2_tr", "a2_rot", "max_resid_rel", "contact_model", "frac_dpos", "Wd_pos_over_Wd_abs"]
 
 
 def read_table(path):
@@ -70,6 +70,25 @@ def params(case):
     return p
 
 
+def contact_model(case):
+    """Damping definition of a case, from the pair-style banner in its log:
+    C1 = contact-point damping, R1 = centre damping, R1-legacy = binary without the
+    banner (Model R), mixed = both banners (must not happen)."""
+    log = os.path.join(case, "log.lammps")
+    txt = open(log).read() if os.path.exists(log) else ""
+    c, r = "damping velocity = contact point" in txt, "damping velocity = centre" in txt
+    model = "mixed" if (c and r) else "C1" if c else "R1" if r else "R1-legacy"
+    # linear-law replica runs (templates_hooke) carry their own label in params.in
+    pin = os.path.join(case, "params.in")
+    if os.path.exists(pin) and model in ("C1", "R1"):
+        for line in open(pin):
+            t = line.split()
+            if len(t) >= 4 and t[:3] == ["variable", "contact_model", "string"] and t[3].startswith("hooke"):
+                want = "hooke-contact" if model == "C1" else "hooke-center"
+                return t[3] if t[3] == want else "mixed"
+    return model
+
+
 def block_error(x, nblock=5):
     if len(x) < 2 * nblock:
         return float("nan")
@@ -77,7 +96,7 @@ def block_error(x, nblock=5):
     return float(b.std(ddof=1) / math.sqrt(nblock))
 
 
-def reduce_case(case, tau_relax):
+def reduce_case(case, tau_relax, out):
     p = params(case)
     N, AR, phi, rho = p["N"], p["AR"], p["phi"], p["rho_p"]
     R, Lc = 0.5, AR - 1.0
@@ -99,11 +118,11 @@ def reduce_case(case, tau_relax):
     g = 4.0 * np.sqrt(ttr / (math.pi * m))
     sig = nu / (n * g) / math.pi                     # units of pi d^2 (d = 1)
 
-    os.makedirs(os.path.join(HERE, "analysis", "hcs_timeseries"), exist_ok=True)
+    os.makedirs(os.path.join(out, "hcs_timeseries"), exist_ok=True)
     replica = os.path.basename(os.path.normpath(case))          # s1, s2, ...
     name = f"AR{AR:g}_a{p['alpha']:.2f}_{replica}"
-    out = os.path.join(HERE, "analysis", "hcs_timeseries", name + ".csv")
-    np.savetxt(out, np.column_stack([t, tau, ttr, trot, theta, T, nu, a2t, a2r, ec]),
+    tsfile = os.path.join(out, "hcs_timeseries", name + ".csv")
+    np.savetxt(tsfile, np.column_stack([t, tau, ttr, trot, theta, T, nu, a2t, a2r, ec]),
                delimiter=",", header="t,tau_c,T_tr,T_rot,theta,T,nu,a2_tr,a2_rot,e_c",
                comments="", fmt="%.8g")
 
@@ -129,6 +148,10 @@ def reduce_case(case, tau_relax):
         "frac_windows_C": float(np.mean(["C" in f for f in flags])),
         "a2_tr": float(a2t[late].mean()), "a2_rot": float(a2r[late].mean()),
         "max_resid_rel": float(resid.max()),
+        "contact_model": contact_model(case),
+        "frac_dpos": float(np.mean(column(hc, rc, "frac_dpos")[:k])) if "frac_dpos" in hc else float("nan"),
+        "Wd_pos_over_Wd_abs": float(np.mean(column(hc, rc, "Wd_pos_over_Wd_abs")[:k]))
+        if "Wd_pos_over_Wd_abs" in hc else float("nan"),
     }
 
 
@@ -139,7 +162,11 @@ def main():
                     help="contacts per particle after which theta is stationary (AR >= 1.5)")
     ap.add_argument("--tau-relax-near-sphere", type=float, default=60.0,
                     help="same for AR <= 1.3, where exchange takes ~20 encounters")
+    ap.add_argument("--out", default=None, help="output folder (default: <root>/analysis)")
+    ap.add_argument("--require-contact-model", default="C1",
+                    help="only cases with this damping definition (C1, R1, R1-legacy, hooke-*, or any)")
     args = ap.parse_args()
+    out = args.out or os.path.join(args.root, "analysis")
     rows = []
     for case in sorted(glob.glob(os.path.join(args.root, "AR*", "a*", "s*"))):
         log = os.path.join(case, "log.lammps")
@@ -147,18 +174,23 @@ def main():
             print(f"skip {os.path.relpath(case, args.root)} (not finished)")
             continue
         AR = float(os.path.relpath(case, args.root).split(os.sep)[0][2:])
-        rows.append(reduce_case(case, args.tau_relax_near_sphere if AR <= 1.3 else args.tau_relax))
+        cm = contact_model(case)
+        if args.require_contact_model != "any" and cm != args.require_contact_model:
+            print(f"skip {os.path.relpath(case, args.root)} (contact model {cm}, "
+                  f"required {args.require_contact_model})")
+            continue
+        rows.append(reduce_case(case, args.tau_relax_near_sphere if AR <= 1.3 else args.tau_relax, out))
         r = rows[-1]
         print(f"AR={r['AR']:<4g} alpha={r['alpha']:.2f} {r['seed']}  tau={r['tau_end']:5.1f}  "
               f"theta*={r['theta_star']:.4f}+-{r['theta_star_err']:.4f}  gamma={r['gamma']:.5f}  "
               f"alpha_eff={r['alpha_eff']:.4f}  sigma_eff={r['sigma_eff']:.4f}  e_c={r['e_c']:.4f}")
-    os.makedirs(os.path.join(HERE, "analysis"), exist_ok=True)
-    with open(os.path.join(HERE, "analysis", "summary.csv"), "w", newline="") as f:
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "summary.csv"), "w", newline="") as f:
         wr = csv.DictWriter(f, fieldnames=COLUMNS)
         wr.writeheader()
         for r in rows:
             wr.writerow({k: r[k] for k in COLUMNS})
-    print(f"{len(rows)} cases -> analysis/summary.csv")
+    print(f"{len(rows)} cases -> {os.path.join(out, 'summary.csv')}")
 
 
 if __name__ == "__main__":

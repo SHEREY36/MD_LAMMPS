@@ -64,7 +64,7 @@ change_box      all triclinic
 variable        N  equal count(all)
 variable        n  equal v_N/vol
 
-pair_style      gran/spherocyl/mfix/history ${kn} 0.0 0.0 0.0 0.0 1
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 0.0 0.0 0.0 1 damp_velocity contact
 pair_coeff      * * ${R} ${H}
 neighbor        ${skin} bin
 neigh_modify    delay 0 every 1 check yes one 200 page 20000
@@ -94,7 +94,7 @@ thermo_style    custom step time c_Tdef
 # =============================================================== B: shear on
 velocity        all ramp vx 0.0 $(v_gdot*ly) y $(ylo) $(yhi) sum yes
 fix             shear all deform 1 xy erate ${gdot} remap v units box
-pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1 damp_velocity contact
 
 variable        nwin equal round(${strain_window}/(${gdot}*${dtrun}))
 fix             diag all spherocyl/diag ${nwin} diag_tr1 sample $(round(v_nwin/10)+1)

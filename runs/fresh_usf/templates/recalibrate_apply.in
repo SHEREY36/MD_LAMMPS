@@ -18,6 +18,6 @@ variable        dtmed  equal $(v_tmed/v_dfac/v_Nc_target)
 variable        dtp10  equal $(v_tp10/v_dfac/20.0)
 variable        dtrun  equal $(ternary(v_dtmed<v_dtp10,v_dtmed,v_dtp10))
 variable        nwin   equal $(round(v_strain_window/(v_gdot*v_dtrun)))
-pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1
+pair_style      gran/spherocyl/mfix/history ${kn} 0.0 ${eta} 0.0 0.0 1 damp_velocity contact
 timestep        ${dtrun}
 print           "RECALIBRATE: kn=${kn} eta=${eta} dt=${dtrun} (median-based ${dtmed}, p10-based ${dtp10}) nwin=${nwin}"

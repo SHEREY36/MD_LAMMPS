@@ -28,6 +28,25 @@ def load(fn):
     return np.atleast_2d(np.loadtxt(fn, comments="#"))
 
 
+def contact_model(case):
+    """Damping definition of a case, from the pair-style banner in its log:
+    C1 = contact-point damping, R1 = centre damping, R1-legacy = binary without the
+    banner (Model R), mixed = both banners (must not happen)."""
+    log = os.path.join(case, "log.lammps")
+    txt = open(log).read() if os.path.exists(log) else ""
+    c, r = "damping velocity = contact point" in txt, "damping velocity = centre" in txt
+    model = "mixed" if (c and r) else "C1" if c else "R1" if r else "R1-legacy"
+    # linear-law replica runs (templates_hooke) carry their own label in params.in
+    pin = os.path.join(case, "params.in")
+    if os.path.exists(pin) and model in ("C1", "R1"):
+        for line in open(pin):
+            t = line.split()
+            if len(t) >= 4 and t[:3] == ["variable", "contact_model", "string"] and t[3].startswith("hooke"):
+                want = "hooke-contact" if model == "C1" else "hooke-center"
+                return t[3] if t[3] == want else "mixed"
+    return model
+
+
 def block(x, nb):
     """mean and standard error from nb contiguous blocks"""
     x = np.asarray(x)
@@ -108,6 +127,9 @@ def summarise(case, nb):
                  "<|ui.uj|>", "dE/E_mean", "dE_rel_tr_per_coll", "dE_rot_per_coll", "dur_mean_steps"):
         rows[name] = wavg(name)
     rows["dmax_max"] = co[:, cc["dmax_max"]].max()
+    rows["contact_model"] = contact_model(case)
+    for name in ("frac_dpos", "Wd_pos_over_Wd_abs"):
+        rows[name] = float(co[:, cc[name]].mean()) if name in cc else float("nan")
     rows["dur_min_steps"] = co[:, cc["dur_min_steps"]].min()
     rows["freeflight_cv2"] = float(np.nanmean(co[:, cc["freeflight_cv2"]]))
     rows["collcount_disp"] = float(np.nanmean(co[:, cc["collcount_disp"]]))
@@ -209,8 +231,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("root", nargs="?", default=os.path.dirname(os.path.abspath(__file__)))
     ap.add_argument("--nblocks", type=int, default=10)
+    ap.add_argument("--require-contact-model", default="C1",
+                    help="only cases with this damping definition (C1, R1, R1-legacy, or any)")
     a = ap.parse_args()
     cases = sorted(os.path.dirname(f) for f in glob.glob(os.path.join(a.root, "AR*", "a*", "prod.stress")))
+    if a.require_contact_model != "any":
+        keep = [c for c in cases if contact_model(c) == a.require_contact_model]
+        for c in sorted(set(cases) - set(keep)):
+            print(f"skip {os.path.relpath(c, a.root)} (contact model {contact_model(c)})")
+        cases = keep
     allrows, report = [], []
     for case in cases:
         try:

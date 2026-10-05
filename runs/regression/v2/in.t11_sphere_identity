@@ -1,0 +1,25 @@
+# T11 spheres (H = 0): the contact-point and centre damping velocities coincide
+# (rho = 0), so 'damp_velocity contact' and 'center' must give identical trajectories.
+# Run twice: -var dv contact  and  -var dv center ; t11_*.dump must be identical.
+units lj
+atom_style ellipsoid
+atom_modify map array
+boundary p p p
+newton off
+comm_modify vel yes
+read_data rods_ar2_T1.data
+set type 1 mass 1.000000357564170
+variable meff equal 0.5
+variable gref equal 2.26
+variable kn equal 5.0*v_meff*v_gref^2/(4.0*0.004^2.5)
+variable lne equal abs(ln(0.7))
+variable eta equal sqrt(5.0)*sqrt(v_kn*v_meff)*v_lne/sqrt(PI*PI+v_lne*v_lne)
+pair_style gran/spherocyl/mfix/history ${kn} 0 ${eta} 0 0 1 damp_velocity ${dv}
+pair_coeff * * 0.5 0.0
+neighbor 0.5 bin
+neigh_modify delay 0 every 1 check yes one 200 page 20000
+fix int all nve/spherocyl
+timestep $(2.94*0.004/v_gref/40.0)
+fix diag all spherocyl/diag 10000 t11_${dv} sample 1000
+run 20000
+write_dump all custom t11_${dv}.dump id x y z vx vy vz angmomx angmomy angmomz modify sort id format float %.17g

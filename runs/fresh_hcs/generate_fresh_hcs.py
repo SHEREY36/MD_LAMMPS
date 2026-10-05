@@ -95,7 +95,15 @@ def main():
     ap.add_argument("--outdir", default=HERE)
     ap.add_argument("--lmp", default=os.path.join(HERE, "bin", "lmp_mpi"))
     ap.add_argument("--np", type=int, default=4, help="MPI ranks per case")
+    ap.add_argument("--templates", default="templates",
+                    help="template folder: templates (Hertz-Tsuji, damp_velocity contact = model C1) "
+                         "or templates_hooke (linear spring-dashpot, damping velocity from --damp)")
+    ap.add_argument("--damp", choices=("contact", "center"), default="contact",
+                    help="damping velocity written to params.in (used by templates_hooke only; "
+                         "the production templates hard-code 'contact')")
     args = ap.parse_args()
+    if args.templates == "templates" and args.damp != "contact":
+        sys.exit("the production templates use contact-point damping only; use --templates templates_hooke")
 
     if args.ARs or args.alphas:
         ARs = args.ARs or [1.1, 1.5, 2.0, 2.5, 3.0]
@@ -104,7 +112,8 @@ def main():
     else:
         pairs = default_cases()
 
-    tdir = os.path.join(HERE, "templates")
+    tdir = os.path.join(HERE, args.templates)
+    contact_model = "C1" if args.templates == "templates" else f"hooke-{args.damp}"
     gen = os.path.join(HERE, "tools", "gen_spherocyl_lammps.py")
     cases = []
     for AR, alpha in pairs:
@@ -145,6 +154,8 @@ variable        log_fraction     equal {args.log_fraction}
 variable        skin             equal {args.skin}
 variable        seed             equal {seed}
 variable        datafile         string spherocyl.data
+variable        contact_model    string {contact_model}
+variable        damp             string {args.damp}
 """)
             for fn in ("in.hcs", "recalibrate.in", "recalibrate_apply.in",
                        "rescale_temperatures.in", "harden.in"):
