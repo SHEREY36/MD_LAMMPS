@@ -21,6 +21,12 @@ Definitions (window values come from fix spherocyl/diag):
   theta_star mean of T_tr/T_rot over tau_c >= tau_relax, error from 5 block means
   sigma_eff = nu / (n <g>), <g> = 4 sqrt(T_tr/(pi m)): contacts per unit
           relative flux, in units of pi d^2 (window average)
+  energy_closure  sum of the window residuals (dE - W_nc) over the sum of |W_nc|:
+          the energy bookkeeping of the whole run (about -0.13 % in both contact
+          models, the discretisation of the window boundaries)
+  resid_rel_q99   99th percentile of the window residual relative to that window's
+          work; max_resid_rel is the single worst window, which one collision in a
+          quiet window can dominate (up to 2.7 % in Model R at AR 3)
 """
 import argparse
 import csv
@@ -36,7 +42,8 @@ COLUMNS = ["AR", "alpha", "seed", "N", "phi", "m", "tau_end", "t_end",
            "theta_star", "theta_star_err", "gamma", "gamma_err", "alpha_eff",
            "sigma_eff", "sigma_eff_err", "e_c", "e_tr", "frac_multibody",
            "frac_same_partner", "frac_gain", "dmax_mean", "frac_windows_C",
-           "a2_tr", "a2_rot", "max_resid_rel", "contact_model", "frac_dpos", "Wd_pos_over_Wd_abs"]
+           "a2_tr", "a2_rot", "max_resid_rel", "contact_model", "frac_dpos", "Wd_pos_over_Wd_abs",
+           "energy_closure", "resid_rel_q99"]
 
 
 def read_table(path):
@@ -133,6 +140,7 @@ def reduce_case(case, tau_relax, out):
     wmean = lambda x: float(np.sum(w * x) / max(np.sum(w), 1.0))
     flags = column(hf, rf, "flags", str)
     resid = np.abs(column(he, re_, "resid_rel"))
+    closure = float(np.sum(column(he, re_, "resid")) / max(np.sum(np.abs(column(he, re_, "W_nc"))), 1e-300))
     return {
         "AR": AR, "alpha": p["alpha"], "seed": replica, "N": N, "phi": phi, "m": m,
         "tau_end": tau[-1], "t_end": t[-1],
@@ -148,6 +156,8 @@ def reduce_case(case, tau_relax, out):
         "frac_windows_C": float(np.mean(["C" in f for f in flags])),
         "a2_tr": float(a2t[late].mean()), "a2_rot": float(a2r[late].mean()),
         "max_resid_rel": float(resid.max()),
+        "energy_closure": closure,
+        "resid_rel_q99": float(np.quantile(resid, 0.99)),
         "contact_model": contact_model(case),
         "frac_dpos": float(np.mean(column(hc, rc, "frac_dpos")[:k])) if "frac_dpos" in hc else float("nan"),
         "Wd_pos_over_Wd_abs": float(np.mean(column(hc, rc, "Wd_pos_over_Wd_abs")[:k]))
